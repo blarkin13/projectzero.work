@@ -139,7 +139,7 @@ async function accountHome(req,env){
 async function stateKey(env){return crypto.subtle.importKey('raw',unb64(env.GOOGLE_OAUTH_STATE_KEY),'AES-GCM',false,['encrypt','decrypt'])}
 async function sealVerifier(env,verifier,stateHash){const iv=crypto.getRandomValues(new Uint8Array(12));const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:utf8.encode(stateHash)},await stateKey(env),utf8.encode(verifier));return b64url(iv)+'.'+b64url(new Uint8Array(cipher))}
 async function openVerifier(env,cipher,stateHash){const [iv,data,...rest]=cipher.split('.');if(rest.length||!iv||!data)throw Error('state');const verified=decode.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(iv),additionalData:utf8.encode(stateHash)},await stateKey(env),unb64(data)));if(!token43(verified))throw Error('state');return verified}
-function authFailure(status=400){return page('Sign-in unavailable','<h1>Unable to sign in</h1><p>Sign-in could not be completed. Return to the account page to try again.</p><a href="/">Return to account</a>',status,{'set-cookie':clearState()})}
+function authFailure(status=400,reference=''){return page('Sign-in unavailable','<h1>Unable to sign in</h1><p>Sign-in could not be completed. Return to the account page to try again.</p>'+(reference?'<p>Support reference: '+reference+'</p>':'')+'<a href="/auth/login">Try Google sign-in again</a>',status,{'set-cookie':clearState()})}
 async function allowedAuthAttempt(req,env){const ip=req.headers.get('CF-Connecting-IP');if(!ip||ip.length>64)return false;const result=await env.AUTH_RATE_LIMIT.limit({key:ip});return result?.success===true}
 async function login(req,env,inviteHash=null){
  const g=googleEnv(env);if(!g)return authFailure(503);env=g;
@@ -155,10 +155,16 @@ async function login(req,env,inviteHash=null){
  return new Response(null,{status:302,headers:{location:url.href,'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':cookieValue('__Host-pz_oauth',state,600)}});
 }
 async function limitedJson(url,options={},max=65536){
- const response=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.ok||!response.body)throw Error('provider');
+ const response=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.body)throw Error('provider');
  const reader=response.body.getReader();let bytes=0,parts=[];
  try{for(;;){const {done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>max)throw Error('provider size');parts.push(value)}}finally{await reader.cancel().catch(()=>{})}
- const all=new Uint8Array(bytes);let offset=0;for(const p of parts){all.set(p,offset);offset+=p.length}return JSON.parse(decode.decode(all));
+ const all=new Uint8Array(bytes);let offset=0;for(const p of parts){all.set(p,offset);offset+=p.length}const parsed=JSON.parse(decode.decode(all));
+ if(!response.ok){
+  // Only fixed, allowlisted classifications; never expose Google's response, tokens or credentials.
+  const error=url===GOOGLE_TOKEN&&parsed?.error;
+  throw Error(error==='invalid_client'||error==='unauthorized_client'?'google-client':error==='invalid_grant'?'google-grant':'provider');
+ }
+ return parsed;
 }
 async function verifyGoogleIdToken(token,clientId,nonceHash,now){
  if(typeof token!=='string'||token.length>16384)return null;
@@ -183,12 +189,16 @@ async function callback(req,env,u){
  // UPDATE RETURNING makes the state single-use across concurrent requests.
  const row=await db.prepare('UPDATE oauth_states SET used_at=? WHERE state_hash=? AND used_at IS NULL AND expires_at>? RETURNING verifier_ciphertext,nonce_hash'+(googleBetaMode(env)?',invite_hash':'')).bind(now,stateHash,now).first();
  if(!row)return authFailure();
+ let stage='PZ-G1';
  try{
   const verifier=await openVerifier(env,row.verifier_ciphertext,stateHash);
   const body=new URLSearchParams({code,client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,redirect_uri:CALLBACK,grant_type:'authorization_code',code_verifier:verifier});
+  stage='PZ-G2';
   const tokens=await limitedJson(GOOGLE_TOKEN,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});
+  stage='PZ-G3';
   const claims=await verifyGoogleIdToken(tokens.id_token,env.GOOGLE_CLIENT_ID,row.nonce_hash,Math.floor(Date.now()/1000));
-  if(!claims)return authFailure(401);
+  if(!claims)return authFailure(401,'PZ-G3');
+  stage='PZ-G4';
   // Bind Google's stable subject; first-time accounts require authoritative email
   // and a valid invitation for that address, or the configured owner's email.
   let user;
@@ -200,11 +210,12 @@ async function callback(req,env,u){
    if(!user&&claims.authoritativeEmail)user=await betaIdentity(db,email,row.invite_hash,subject,email===normalizeEmail(env.OWNER_EMAIL));
   }else user=await db.prepare('SELECT u.id FROM users u WHERE u.oidc_subject=? AND lower(u.email)=lower(?) AND u.disabled_at IS NULL AND EXISTS (SELECT 1 FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=u.id AND w.deleted_at IS NULL)').bind(claims.sub,claims.email).first();
   if(!user)return googleBetaMode(env)?googleBetaPage('Use the Google account that was invited, or request beta access. For non-Gmail/non-Workspace addresses use email verification.',403):authFailure(403);
+  stage='PZ-G5';
   const sessionToken=randomToken(),sessionHash=await hash(sessionToken);
   await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(sessionHash,user.id,now+43200).run();
   const headers=new Headers({location:'/','cache-control':'no-store','referrer-policy':'no-referrer'});headers.append('set-cookie',clearState());headers.append('set-cookie',cookieValue('__Host-pz_session',sessionToken,43200));
   return new Response(null,{status:303,headers});
- }catch{return authFailure(401)}
+ }catch(error){const reference=stage==='PZ-G2'&&error?.message==='google-client'?'PZ-G2C':stage==='PZ-G2'&&error?.message==='google-grant'?'PZ-G2R':stage;return authFailure(401,reference)}
 }
 async function logout(req,env){
  if(req.headers.get('origin')!==ACCOUNT_ORIGIN)return json({error:'Forbidden'},403);
@@ -311,7 +322,7 @@ async function betaIdentity(db,email,inviteHash=null,googleSubject=null,ownerAll
   db.prepare("INSERT INTO workspace_entitlements(workspace_id,plan,state,project_limit,integration_limit,sync_daily_limit,retention_days) SELECT ?,'private_beta','active',3,0,0,30 WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,wid),
   db.prepare('INSERT INTO beta_accounts(user_id,workspace_id,accepted_terms) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)').bind(id,wid,BETA_TERMS,wid),
   db.prepare("INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_type,resource_id) SELECT ?,?,?,'beta.created','workspace',? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,crypto.randomUUID(),id,wid,wid),
-  db.prepare('UPDATE beta_invitations SET redeemed_at=? WHERE code_hash=? AND email=? AND EXISTS(SELECT 1 FROM beta_accounts WHERE user_id=? AND workspace_id=?)').bind(now,inviteHash,email,id,wid)
+  ...(!ownerAllowed?[db.prepare('UPDATE beta_invitations SET redeemed_at=? WHERE code_hash=? AND email=? AND EXISTS(SELECT 1 FROM beta_accounts WHERE user_id=? AND workspace_id=?)').bind(now,inviteHash,email,id,wid)]:[])
  ]);
  return await findBetaIdentity(db,email,subject);
 }
