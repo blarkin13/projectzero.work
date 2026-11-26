@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 
 // Exercise the real private renderers without bypassing production route authentication.
 const source=readFileSync(new URL('../workers/portfolio-owner/worker.mjs',import.meta.url),'utf8');
-const {trackerDashboard,trackerNotes,trackerRespond}=await import('data:text/javascript;base64,'+Buffer.from(source+'\nexport {trackerDashboard,trackerNotes,trackerRespond};').toString('base64'));
+const {trackerDashboard,trackerNotes,trackerRespond,trackerInstructions,trackerKeysPage}=await import('data:text/javascript;base64,'+Buffer.from(source+'\nexport {trackerDashboard,trackerNotes,trackerRespond,trackerInstructions,trackerKeysPage};').toString('base64'));
 function fixture(){
  const db=new DatabaseSync(':memory:');
  db.exec(readFileSync('schema/tracker.sql','utf8'));
@@ -96,5 +96,28 @@ test('saving an owner response retains the selected project',async()=>{
   const page=await trackerNotes(env,url(res.headers.get('location')));
   assert.deepEqual(cards(page),{'Your actions needed':0,'Awaiting assistant follow-up':2,'Blocked tasks':1,'Recent notes':3});
   assert.equal(db.prepare("SELECT status FROM tracker_tasks WHERE task_id='APT-TEST-1'").get().status,'Blocked');
+ }finally{db.close()}
+});
+
+
+test('assistant instructions are accessible under advanced settings, not the development tabs',async()=>{
+ const {db,env}=fixture();
+ try{
+  db.prepare('INSERT INTO tracker_instructions(position,heading,details) VALUES(1,?,?)').run('Test instruction','Preserve revision and verify deployment');
+  const nav=html=>{const match=html.match(/<div class="filters tr-section-tabs"[^>]*>(.*?)<\/div>/);assert.ok(match,'development navigation exists');return match[1]};
+  const tracker=await trackerDashboard(env,url('/development'));
+  const notes=await trackerNotes(env,url('/development/notes'));
+  for(const page of [tracker,notes]){
+   assert.doesNotMatch(nav(page),/\/development\/instructions/);
+   assert.match(nav(page),/\/development\/integration/);
+  }
+  const integration=await trackerKeysPage(env);
+  assert.match(integration,/<details class="tracker-overview" id="advanced-settings"><summary>Advanced settings<\/summary>/);
+  assert.match(integration,/href="\/development\/instructions">Development instructions<\/a>/);
+  assert.doesNotMatch(nav(integration),/\/development\/instructions/);
+  const instructions=await trackerInstructions(env);
+  assert.match(nav(instructions),/href="\/development\/integration" aria-current="page"/);
+  assert.match(instructions,/Back to assistant integration/);
+  assert.match(instructions,/Preserve revision and verify deployment/);
  }finally{db.close()}
 });
