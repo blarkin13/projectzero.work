@@ -2,7 +2,7 @@
   "schema": 1,
   "workers": {
     "portfolio-owner": {
-      "template_sha256": "5c454e5029afaf899af537ad36c9299773edf4c94edc9311d08d80c70ac18027",
+      "template_sha256": "5c23b10882aa6533e2bdfce2ed6b95efe123e2585f922540ed5532e5047eaf6e",
       "replacements": 24
     },
     "portfolio-tracker-api": {
