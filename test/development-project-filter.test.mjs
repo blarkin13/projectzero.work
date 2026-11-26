@@ -36,7 +36,7 @@ test('task tracker totals use the same selected project and additional filters a
  try{
   const page=await trackerDashboard(env,url('/development?project=SiteAPT'));
   assert.deepEqual(cards(page),{'Total tasks':4,Completed:1,'P0 remaining':1,Blocked:1});
-  assert.match(page,/Owner actions needed: 1/);
+  assert.doesNotMatch(page,/Owner actions needed:|\+ Add P0 feature/);
   assert.match(page,/Tasks · 4 matching/);
   assert.match(page,/href="\/development\/notes\?project=SiteAPT"/);
   assert.match(page,/APT-TEST-1/);
@@ -49,7 +49,7 @@ test('task tracker totals use the same selected project and additional filters a
   assert.match(none,/No matching tasks/);
   const all=await trackerDashboard(env,url('/development'));
   assert.deepEqual(cards(all),{'Total tasks':34,Completed:1,'P0 remaining':2,Blocked:2});
-  assert.match(all,/Owner actions needed: 2/);
+  assert.doesNotMatch(all,/Owner actions needed:|\+ Add P0 feature/);
   assert.doesNotMatch(all,/Title ARCHIVE-TEST-1/);
  }finally{db.close()}
 });
