@@ -128,7 +128,10 @@ async function login(req,env){
  return new Response(null,{status:302,headers:{location:url.href,'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':cookieValue('__Host-pz_oauth',state,600)}});
 }
 async function limitedJson(url,options={},max=65536){
- const response=await fetch(url,{...options,redirect:'error',signal:AbortSignal.timeout(10000)});if(!response.body)throw Error('provider');
+ // Workers only support manual/follow; explicitly reject 3xx to prevent forwarding credentials.
+ const response=await fetch(url,{...options,redirect:'manual',signal:AbortSignal.timeout(10000)});
+ if(response.status>=300&&response.status<400){await response.body?.cancel().catch(()=>{});throw Error('provider-redirect');}
+ if(!response.body)throw Error('provider');
  const reader=response.body.getReader();let bytes=0,parts=[];
  try{for(;;){const {done,value}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>max)throw Error('provider size');parts.push(value)}}finally{await reader.cancel().catch(()=>{})}
  const all=new Uint8Array(bytes);let offset=0;for(const p of parts){all.set(p,offset);offset+=p.length}const parsed=JSON.parse(decode.decode(all));

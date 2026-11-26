@@ -16,11 +16,12 @@ function fixture(){
  CREATE TABLE workspaces(id TEXT PRIMARY KEY,name TEXT,deleted_at TEXT);
  CREATE TABLE memberships(workspace_id TEXT,user_id TEXT,role TEXT);
  CREATE TABLE sessions(token_hash TEXT PRIMARY KEY,user_id TEXT,expires_at INTEGER,revoked_at INTEGER);
+ CREATE TABLE workspace_entitlements(workspace_id TEXT PRIMARY KEY,plan TEXT,state TEXT,project_limit INTEGER,integration_limit INTEGER,sync_daily_limit INTEGER,retention_days INTEGER);
  INSERT INTO users VALUES('u1','google-subject','example@example.invalid',NULL),('u2','other-subject','other@example.invalid',NULL);
  INSERT INTO workspaces VALUES('w1','Authorized workspace',NULL),('w2','Unrelated workspace',NULL);
  INSERT INTO memberships VALUES('w1','u1','owner'),('w2','u2','owner');
  `);
- const db={prepare(s){const stmt=sql.prepare(s);return {bind(...args){return {first:async()=>stmt.get(...args)||null,all:async()=>({results:stmt.all(...args)}),run:async()=>stmt.run(...args)}}}}};
+ const db={async batch(stmts){sql.exec('BEGIN');try{const results=[];for(const stmt of stmts)results.push(await stmt.run());sql.exec('COMMIT');return results;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(s){const stmt=sql.prepare(s);return {bind(...args){return {first:async()=>stmt.get(...args)||null,all:async()=>({results:stmt.all(...args)}),run:async()=>stmt.run(...args)}}}}};
  const env={COMMERCIAL_DB:db,CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'invite_only',GOOGLE_CLIENT_ID:ID,GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),AUTH_RATE_LIMIT:{limit:async()=>({success:true})}};
  return {sql,env};
 }
@@ -50,13 +51,13 @@ async function provider(nonce,challenge,changes={}){
  globalThis.fetch=async (url,options)=>{
   calls++;
   if(url==='https://oauth2.googleapis.com/token'){
-   assert.equal(options.method,'POST');assert.equal(options.redirect,'error');
+   assert.equal(options.method,'POST');assert.equal(options.redirect,'manual');
    assert.equal(options.body.get('redirect_uri'),HOST+'/auth/google/callback');
    const expected=b64(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(options.body.get('code_verifier'))));
    assert.equal(expected,challenge);
    return Response.json({id_token:await idToken(nonce,changes),access_token:'never-persist-this'});
   }
-  assert.equal(url,'https://www.googleapis.com/oauth2/v3/certs');
+  assert.equal(url,'https://www.googleapis.com/oauth2/v3/certs');assert.equal(options.redirect,'manual');
   return Response.json({keys:[jwk]});
  };
  return {calls:()=>calls,restore:()=>globalThis.fetch=original};
@@ -138,4 +139,16 @@ test('owner-only Google login rejects another verified Google account and has no
  try{const r=await callback(flow,env);assert.equal(r.status,403);assert.equal(sql.prepare('SELECT COUNT(*) n FROM sessions').get().n,0);}finally{mock.restore();}
  assert.equal((await worker.fetch(request('/admin/beta'),env)).status,401);
  assert.equal((await worker.fetch(request('/auth/signup'),env)).status,503);
+});
+
+for(const endpoint of ['token','certs'])test('OAuth rejects provider redirects at '+endpoint+' without following or creating session',async()=>{
+ const {env,sql}=fixture(),flow=await start(env),original=globalThis.fetch;let calls=0;
+ globalThis.fetch=async(url,options)=>{calls++;assert.equal(options.redirect,'manual');if(url==='https://oauth2.googleapis.com/token'&&endpoint==='certs')return Response.json({id_token:await idToken(flow.nonce)});assert.equal(url,endpoint==='token'?'https://oauth2.googleapis.com/token':'https://www.googleapis.com/oauth2/v3/certs');return new Response(null,{status:302,headers:{location:'https://unexpected.example/'}})};
+ try{const r=await callback(flow,env);assert.equal(r.status,401);assert.equal(calls,endpoint==='token'?1:2);assert.equal(sql.prepare('SELECT COUNT(*) n FROM sessions').get().n,0);}finally{globalThis.fetch=original;}
+});
+test('first successful owner sign-in provisions one workspace and pins Google subject',async()=>{
+ const {env,sql}=fixture();env.GOOGLE_LOGIN_MODE='owner_only';env.OWNER_EMAIL='owner@gmail.com';
+ let flow=await start(env),mock=await provider(flow.nonce,flow.challenge,{sub:'owner-subject',email:'owner@gmail.com'});
+ try{assert.equal((await callback(flow,env)).status,303);assert.equal(sql.prepare("SELECT oidc_subject FROM users WHERE email='owner@gmail.com'").get().oidc_subject,'owner-subject');assert.equal(sql.prepare('SELECT COUNT(*) n FROM workspace_entitlements').get().n,1);}finally{mock.restore()}
+ flow=await start(env);mock=await provider(flow.nonce,flow.challenge,{sub:'different-subject',email:'owner@gmail.com'});try{assert.equal((await callback(flow,env)).status,403);assert.equal(sql.prepare('SELECT COUNT(*) n FROM sessions').get().n,1);}finally{mock.restore()}
 });
