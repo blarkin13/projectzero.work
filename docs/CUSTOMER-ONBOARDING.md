@@ -4,7 +4,7 @@
 
 The public landing page and demo are separate from the protected owner workspace. The demo is fictional, memory-only, and has no network connection to AI services or customer accounts. It generates deterministic, copy-ready example instructions, not AI output.
 
-The commercial Worker is a separate tenant-scoped service, with only its dedicated commercial D1 binding. Keep CUSTOMER_ACCESS=disabled, workers.dev and previews disabled, and no customer-facing custom domain until the remaining identity, security, privacy, legal, billing and owner release gates pass. No live account creation, billing, AI service connection, scheduler or external service purchase is enabled by this release.
+The commercial Worker is a separate tenant-scoped service, with only its dedicated commercial D1 binding. The separate free beta release is owner-authorized; see FREE-BETA.md for the isolated email-verification configuration and launch checks. CUSTOMER_ACCESS=beta never enables paid service; retain workers.dev and previews disabled. No billing, AI service connection, AI scheduler or external service purchase is enabled.
 
 ## Customer setup
 
@@ -24,4 +24,4 @@ The additive migration `schema/migrations/001-commercial-onboarding.sql` applies
 
 The public landing module is now represented in `workers/projectzero-landing/worker.mjs`. Its public analytics site identifier is redacted as __PZ_PUBLIC_ANALYTICS_SITE__ in the repository. For release, preserve the real existing deployed identifier privately; never deploy the placeholder. Verify exact deployed baseline and apply reviewed changes to the existing binding-free landing Worker, preserving analytics consent and the private sign-in gate. The established five-Worker private recovery manifest is unchanged; a full landing manifest reconciliation is a separate release-maintenance task.
 
-Run `npm run check` and `npm test`. Public demo route and asset version, CSP, instruction generation, auth/CSRF, workspace isolation, quota, hashing, expiration/revocation and rate limits are exercised with synthetic SQLite data. Before enabling commercial customer access, also complete authentic identity-provider session and cross-tenant HTTP tests against a nonproduction environment and verify the UI on desktop and mobile.
+Run `npm run check` and `npm test`. Public demo route and asset version, CSP, instruction generation, auth/CSRF, workspace isolation, quota, hashing, expiration/revocation and rate limits are exercised with synthetic SQLite data. Before enabling broader commercial or integrated access, complete authentic identity-provider session/security tests and cross-tenant HTTP tests and verify the UI on desktop and mobile. The free beta has separate account and task tests, capped email verification, export and deletion.

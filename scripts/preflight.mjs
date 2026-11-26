@@ -29,7 +29,21 @@ export function verifyRelease({name,entry,observed,template,candidate,now=Date.n
   }
   if (/__PZ_CONFIG_\d{3}__/.test(restored) || restored!==candidate) throw Error('Candidate does not match reviewed source and private configuration');
   if (sha(template)===entry.template_sha256 && sha(candidate)!==entry.source_sha256) throw Error('Unchanged baseline must reproduce deployed source exactly');
-  if (name==='projectzero-commercial' && entry.metadata.bindings.find(b=>b.name==='CUSTOMER_ACCESS')?.text!=='disabled') throw Error('Commercial customer access must remain disabled');
+  if (name==='projectzero-commercial') {
+    const bindings=entry.metadata.bindings, find=n=>bindings.find(b=>b.name===n);
+    const access=find('CUSTOMER_ACCESS')?.text;
+    if (access!=='disabled') {
+      const betaNames=['COMMERCIAL_DB','CUSTOMER_ACCESS','EMAIL_LOGIN_MODE','TURNSTILE_SITE_KEY','BETA_EMAIL','BETA_AUTH_LIMIT'];
+      const email=find('BETA_EMAIL'), rate=find('BETA_AUTH_LIMIT');
+      const beta=access==='beta'&&bindings.length===betaNames.length&&betaNames.every(n=>!!find(n))&&
+        find('COMMERCIAL_DB').type==='d1'&&find('EMAIL_LOGIN_MODE').text==='open_beta'&&
+        /^[A-Za-z0-9_-]{10,100}$/.test(find('TURNSTILE_SITE_KEY').text||'')&&
+        email.type==='send_email'&&JSON.stringify(email.allowed_sender_addresses)===JSON.stringify(['signin@auth.projectzero.work'])&&
+        rate.type==='ratelimit'&&rate.simple?.limit===12&&rate.simple?.period===60&&
+        entry.required_secret_names.length===1&&entry.required_secret_names[0]==='TURNSTILE_SECRET';
+      if (!beta) throw Error('Commercial customer access must remain disabled except the explicitly isolated free beta configuration');
+    }
+  }
   return {worker:name,previous_version:observed.versions[0].version_id,previous_deployment:observed.deployment_id,source_sha256:sha(candidate),configuration_sha256:configDigest(entry),change:sha(candidate)===entry.source_sha256?'no-op':'source change',status:'preflight passed; no deployment performed'};
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
