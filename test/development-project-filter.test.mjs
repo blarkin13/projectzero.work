@@ -26,6 +26,7 @@ function fixture(){
 }
 const url=path=>new URL('https://dash.projectzero.work'+path);
 function cards(html){
+ assert.ok(html.indexOf('<div class="statcards">')<html.indexOf('<div class="tr-projects"'),'summary cards precede project filters');
  const block=html.match(/<div class="statcards">((?:<div><strong>[^<]*<\/strong><span>[^<]*<\/span><\/div>)+)<\/div>/);
  assert.ok(block,'summary cards present');
  return Object.fromEntries(Array.from(block[1].matchAll(/<strong>([^<]*)<\/strong><span>([^<]*)<\/span>/g),m=>[m[2],Number(m[1])]));
