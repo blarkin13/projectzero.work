@@ -13,7 +13,7 @@ function fixture(){
  for(const w of ['alpha','beta']){db.prepare('INSERT INTO workspaces(id,name) VALUES(?,?)').run(w,w);db.prepare("INSERT INTO workspace_entitlements(workspace_id,plan,state,project_limit,integration_limit,sync_daily_limit,retention_days) VALUES(?,'private_beta','active',2,4,20,30)").run(w)}
  for(const row of [['alpha','owner','owner'],['alpha','viewer','viewer'],['beta','other','owner']])db.prepare('INSERT INTO memberships(workspace_id,user_id,role) VALUES(?,?,?)').run(...row);
  const prepare=sql=>({bind(...args){return {async first(){return db.prepare(sql).get(...args)||null},async all(){return {results:db.prepare(sql).all(...args)}},runSync(){const r=db.prepare(sql).run(...args);return {meta:{changes:Number(r.changes)}}},async run(){return this.runSync()}}},async first(){return db.prepare(sql).get()||null}});
- const env={CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'invite_only',GOOGLE_CLIENT_ID:'synthetic-client.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:'a'.repeat(43),AUTH_RATE_LIMIT:{limit:async()=>({success:true})},COMMERCIAL_DB:{prepare,async batch(stmts){db.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());db.exec('COMMIT');return r}catch(e){db.exec('ROLLBACK');throw e}}}};
+ const env={CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'authorized',GOOGLE_CLIENT_ID:'synthetic-client.apps.googleusercontent.com',GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:'a'.repeat(43),AUTH_RATE_LIMIT:{limit:async()=>({success:true})},COMMERCIAL_DB:{prepare,async batch(stmts){db.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());db.exec('COMMIT');return r}catch(e){db.exec('ROLLBACK');throw e}}}};
  async function request(path,{actor='owner',method='GET',body,origin=base,bearer,access='enabled'}={}){
   const headers={};if(actor)headers.cookie='__Host-pz_session='+tokens[actor];if(origin!==null)headers.origin=origin;if(body!==undefined)headers['content-type']='application/json';if(bearer)headers.authorization='Bearer '+bearer;
   const response=await worker.fetch(new Request(base+path,{method,headers,body:body!==undefined?JSON.stringify(body):undefined}),{...env,CUSTOMER_ACCESS:access});
@@ -29,7 +29,7 @@ test('commercial onboarding remains closed and fails authentication, role and CS
   const closed=await r('/internal/readiness',{actor:null,access:'disabled'});assert.equal(closed.status,404);assert.equal(closed.data.error,'Not found');
   assert.equal((await r('/workspaces/alpha/setup',{access:'disabled'})).status,503);
   assert.equal((await r(projects('alpha'),{method:'POST',body:brief(),access:'disabled'})).status,503);
-  assert.equal((await r('/auth/signup')).status,503);
+  assert.equal((await r('/auth/signup')).status,404);
   assert.equal((await r('/workspaces/alpha/setup',{actor:null})).status,401);
   assert.equal((await r('/workspaces/alpha/setup',{actor:'other'})).status,404);
   assert.equal((await r('/workspaces/alpha/setup',{actor:'viewer'})).status,403);
