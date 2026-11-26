@@ -6,7 +6,8 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "node --test",
-    "build": "node scripts/materialize.mjs"
+    "build": "node scripts/materialize.mjs",
+    "preflight": "node scripts/preflight.mjs"
   },
   "engines": {
     "node": ">=22"
