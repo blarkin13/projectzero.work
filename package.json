@@ -1,0 +1,14 @@
+{
+  "name": "projectzero-work",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test",
+    "build": "node scripts/materialize.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
