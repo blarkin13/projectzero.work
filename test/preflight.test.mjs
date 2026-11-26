@@ -19,10 +19,9 @@ test('candidate tampering fails closed',()=>{const f=fixture();f.candidate+='\n/
 test('split traffic fails closed',()=>{const f=fixture();f.observed.versions[0].percentage=50;assert.throws(()=>verifyRelease(f),/100%/)});
 test('secret values cannot be included in metadata',()=>{const f=fixture();f.entry.metadata.bindings.push({name:'TEST_KEY',type:'secret_text',text:'synthetic'});assert.throws(()=>configDigest(f.entry),/Secret values/)});
 test('commercial enablement fails closed',()=>{const f=fixture();f.name='projectzero-commercial';f.observed.worker=f.name;f.entry.metadata.bindings.push({name:'CUSTOMER_ACCESS',type:'plain_text',text:'enabled'});f.observed.configuration_sha256=configDigest(f.entry);assert.throws(()=>verifyRelease(f),/remain disabled/)});
-test('only isolated and explicitly bounded beta access passes the commercial access preflight',()=>{
+test('only isolated authorized Google access passes the commercial access preflight',()=>{
  const f=fixture();f.name='projectzero-commercial';f.observed.worker=f.name;
- f.entry.metadata.bindings=[{name:'COMMERCIAL_DB',type:'d1',id:'synthetic'},{name:'CUSTOMER_ACCESS',type:'plain_text',text:'beta'},{name:'EMAIL_LOGIN_MODE',type:'plain_text',text:'invite_only'},{name:'OWNER_EMAIL',type:'plain_text',text:'owner@example.invalid'},{name:'GOOGLE_LOGIN_MODE',type:'plain_text',text:'beta_invite'},{name:'TURNSTILE_SITE_KEY',type:'plain_text',text:'test-site-key123'},{name:'BETA_EMAIL',type:'send_email',allowed_sender_addresses:['signin@auth.projectzero.work']},{name:'BETA_AUTH_LIMIT',type:'ratelimit',simple:{limit:12,period:60}}];f.entry.required_secret_names=['TURNSTILE_SECRET','PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY'];
+ f.entry.metadata.bindings=[{name:'COMMERCIAL_DB',type:'d1',id:'synthetic'},{name:'CUSTOMER_ACCESS',type:'plain_text',text:'enabled'},{name:'OWNER_EMAIL',type:'plain_text',text:'owner@example.invalid'},{name:'GOOGLE_LOGIN_MODE',type:'plain_text',text:'authorized'},{name:'AUTH_RATE_LIMIT',type:'ratelimit',simple:{limit:12,period:60}}];f.entry.required_secret_names=['PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY'];
  f.observed.configuration_sha256=configDigest(f.entry);assert.equal(verifyRelease(f).change,'no-op');
  f.entry.metadata.bindings.push({name:'PRIVATE_OWNER_DB',type:'d1',id:'bad'});f.observed.configuration_sha256=configDigest(f.entry);assert.throws(()=>verifyRelease(f),/remain disabled/);
 });
-
