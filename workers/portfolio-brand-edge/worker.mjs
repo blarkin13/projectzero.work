@@ -1,0 +1,27 @@
+const SITES={"hum":{"host":"humperdinck.studio","origin":"HUM","worker":"humperdinck","css":["/styles.css","/legal.css","/footer-unified.css"],"assets":["/assets/brand-modern.png","/assets/humperdinck-favicon.ico","/assets/og-image.png"]},"apt":{"host":"siteapt.app","origin":"APT","worker":"statatlas-web","css":["/assets/shell-v124.css","/assets/siteapt-theme-v4.css"],"assets":["/assets/siteapt-logo-black-v1.png","/assets/siteapt-logo-white-v1.png","/siteapt-mark.png","/og/siteapt-social-v1.jpg"]},"grim":{"host":"thegrimthread.com","origin":"GRIM","worker":"grim-storefront","css":["/assets/storefront.css"],"assets":["/assets/grim-thread-logo.webp","/favicon.ico","/assets/grim-thread-og-v1.jpg"]},"owl":{"host":"www.thestoryowl.com","origin":"OWL","worker":"storyowl-preview","css":["/site.css"],"assets":["/imgs/theOwl.webp","/favicon.png","/imgs/storyowl-og.png"]},"yarr":{"host":"yarr.media","origin":"YARR","worker":"yarr","css":[],"assets":["/brand-mark.svg","/favicon.svg","/assets/yarr-media-og-v2.jpg"]}};
+
+const memory=new Map();
+const norm=v=>v.length===4?'#'+v.slice(1).split('').map(c=>c+c).join('').toUpperCase():v.length===5?'#'+v.slice(1).split('').map(c=>c+c).join('').toUpperCase():v.toUpperCase();
+const replaceColors=(css,map)=>css.replace(/\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|url\([^)]*\)|#[a-fA-F0-9]{3,8}(?![a-fA-F0-9\w-])/gi,m=>m[0]==='#'?(map[norm(m)]||m):m);
+async function manifest(env,key){const cached=memory.get(key);if(cached&&Date.now()-cached.at<15000)return cached.value;try{const object=await env.FILES.get('live/'+key+'/manifest.json');const value=object&&object.size<32768?await object.json():null;memory.set(key,{at:Date.now(),value});return value}catch{return null}}
+const cleanHeaders=(r)=>{const h=new Headers(r.headers);for(const k of ['content-length','content-encoding','etag','last-modified','content-md5','digest'])h.delete(k);h.set('Cache-Control','private, no-store');return h};
+function baseRequest(req){const h=new Headers(req.headers);h.delete('if-none-match');h.delete('if-modified-since');return new Request(req,{headers:h})}
+const withRevision=(v,rev,base)=>{try{const u=new URL(v,base);u.searchParams.set('portfolio-brand',String(rev));return u.toString()}catch{return v}};
+export default {async fetch(req,env){const u=new URL(req.url);const pair=Object.entries(SITES).find(([k,s])=>s.host===u.hostname);if(!pair)return new Response('Not found',{status:404});const [key,site]=pair,origin=env[site.origin];if(u.pathname==='/__portfolio_brand_probe'&&req.method==='GET')return new Response('portfolio-brand-connected:'+key,{headers:{'Content-Type':'text/plain','Cache-Control':'no-store'}});const allowed=u.pathname==='/'||site.css.includes(u.pathname)||site.assets.includes(u.pathname);
+if(!allowed||!['GET','HEAD'].includes(req.method))return origin.fetch(req);
+const live=await manifest(env,key);
+const f=live?.files?.[u.pathname];if(f&&site.assets.includes(u.pathname)&&typeof f.object==='string'&&f.object.startsWith('live/'+key+'/objects/')&&['image/png','image/jpeg','image/webp'].includes(f.mime)){try{const obj=await env.FILES.get(f.object);if(obj&&obj.size<=3145728)return new Response(req.method==='HEAD'?null:obj.body,{headers:{'Content-Type':f.mime,'Cache-Control':'public, max-age=60','X-Content-Type-Options':'nosniff','X-Portfolio-Brand-Revision':String(live.revision)}})}catch{}}
+const r=await origin.fetch(live?baseRequest(req):req);
+if(req.method==='HEAD'||!r.ok)return r;
+const type=r.headers.get('content-type')||'',map=live?.colors||{};
+if(site.css.includes(u.pathname)&&type.includes('text/css')&&Object.keys(map).length){try{const css=await r.clone().text();if(css.length>500000)return r;return new Response(replaceColors(css,map),{status:r.status,headers:cleanHeaders(r)})}catch{return r}}
+if(u.pathname!=='/'||!type.includes('text/html'))return r;
+try{const rewrite=new HTMLRewriter().on('head',{element(el){el.append('<meta name="portfolio-brand-layer" content="'+(live?.revision||'connected')+'">',{html:true})}});
+if(live){if(Object.keys(map).length){let chunks='';rewrite.on('style',{element(){chunks=''},text(t){chunks+=t.text;if(t.lastInTextNode){t.replace(replaceColors(chunks,map));chunks=''}else t.remove()}}).on('[style]',{element(el){const style=el.getAttribute('style');if(style)el.setAttribute('style',replaceColors(style,map))}})}
+const pathOf=v=>{try{const target=new URL(v,u);return target.hostname===u.hostname?target.pathname:null}catch{return null}};
+rewrite.on('img[src],link[href]',{element(el){const attr=el.tagName==='img'?'src':'href';const val=el.getAttribute(attr);const path=pathOf(val);if(path&&(live.files?.[path]||site.css.includes(path)&&Object.keys(map).length)){el.setAttribute(attr,withRevision(val,live.revision,u));if(el.tagName==='link'&&live.files?.[path])el.setAttribute('type',live.files[path].mime)}}});
+let ogChanged=false;rewrite.on('meta[property="og:image"],meta[property="og:image:secure_url"],meta[name="twitter:image"]',{element(el){const val=el.getAttribute('content'),path=pathOf(val);if(path&&live.files?.[path]){el.setAttribute('content',withRevision(val,live.revision,u));ogChanged=true}}});
+const ogPath=site.assets.at(-1),og=live.files?.[ogPath];if(og){rewrite.on('meta[property="og:image:type"]',{element(el){el.setAttribute('content',og.mime)}}).on('meta[property="og:image:width"],meta[property="og:image:height"]',{element(el){el.remove()}})}
+}
+return rewrite.transform(new Response(r.body,{status:r.status,headers:cleanHeaders(r)}))}catch{return r}
+}};
