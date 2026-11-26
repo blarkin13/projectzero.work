@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
 import worker from '../workers/projectzero-commercial/worker.mjs';
 const HOST='https://account.projectzero.work';
 const ID='synthetic-client.apps.googleusercontent.com';
@@ -129,4 +130,38 @@ for(const [label,claims,expected] of [
 test('logout requires same-origin POST',async()=>{
  const {env}=fixture();
  assert.equal((await worker.fetch(request('/auth/logout',{method:'POST',headers:{origin:'https://evil.example'}}),env)).status,403);
+});
+
+
+test('only the configured Google owner can sign into beta and manage personal invites',async()=>{
+ const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON');
+ for(const f of ['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql','schema/migrations/002-free-beta.sql','schema/migrations/003-beta-invitations.sql'])sql.exec(readFileSync(f,'utf8'));
+ const prepare=s=>({bind(...a){return {first:async()=>sql.prepare(s).get(...a)||null,all:async()=>({results:sql.prepare(s).all(...a)}),runSync:()=>({meta:{changes:Number(sql.prepare(s).run(...a).changes)}}),async run(){return this.runSync()}}}});
+ const env={COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}},CUSTOMER_ACCESS:'beta',EMAIL_LOGIN_MODE:'invite_only',GOOGLE_LOGIN_MODE:'owner_beta',OWNER_EMAIL:'example@example.invalid',PZW_GOOGLE_CLIENT_ID:ID,PZW_GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),BETA_AUTH_LIMIT:{limit:async()=>({success:true})},BETA_EMAIL:{send:async()=>{}},TURNSTILE_SITE_KEY:'test-site-key123',TURNSTILE_SECRET:'synthetic-secret'};
+ const attempt=async changes=>{const flow=await start(env),mock=await provider(flow.nonce,flow.challenge,changes);try{return await callback(flow,env)}finally{mock.restore()}};
+ try{
+  const home=await worker.fetch(request('/'),env);assert.match(await home.text(),/Owner sign in with Google/);
+  assert.equal((await attempt({email:'other@example.invalid'})).status,403);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);
+  const result=await attempt({});assert.equal(result.status,303,await result.clone().text());
+  const cookie=result.headers.getSetCookie().find(c=>c.startsWith('__Host-pz_session=')).split(';')[0];
+  assert.equal((await attempt({sub:'different-google-subject'})).status,403);
+  const get=()=>worker.fetch(request('/admin/beta',{headers:{cookie}}),env);
+  const post=(form,origin=HOST)=>worker.fetch(request('/admin/beta',{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form)}),env);
+  assert.match(await (await get()).text(),/Generate a free invitation code/);
+  assert.equal((await post({action:'issue',email:'tester@example.invalid'},'https://evil.invalid')).status,403);
+  assert.equal((await post({action:'issue',email:'example@example.invalid'})).status,400);
+  const issued=await post({action:'issue',email:'tester@example.invalid'});assert.equal(issued.status,200);
+  const markup=await issued.text(),code=markup.match(/readonly value="([A-Za-z0-9_-]{43})"/)?.[1];assert.ok(code);
+  assert(!JSON.stringify(sql.prepare('SELECT * FROM beta_invitations').all()).includes(code));
+  assert(!(await (await get()).text()).includes(code));
+  const second=await post({action:'issue',email:'tester@example.invalid'});assert.equal(second.status,200);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NOT NULL').get().n,1);
+  const id=sql.prepare('SELECT id FROM beta_invitations WHERE revoked_at IS NULL').get().id;
+  assert.equal((await post({action:'revoke',id})).status,200);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NULL').get().n,0);
+  assert.match(await (await worker.fetch(request('/',{headers:{cookie}}),env)).text(),/Manage beta invitations/);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,1);
+  assert.deepEqual(sql.prepare('PRAGMA foreign_key_check').all(),[]);
+ }finally{sql.close()}
 });
