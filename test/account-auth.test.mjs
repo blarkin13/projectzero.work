@@ -62,11 +62,13 @@ async function provider(nonce,challenge,changes={}){
  return {calls:()=>calls,restore:()=>globalThis.fetch=original};
 }
 const callback=(flow,env,overrides={})=>worker.fetch(request('/auth/google/callback?state='+encodeURIComponent(overrides.state??flow.state)+'&code=test-code',{headers:{cookie:overrides.cookie??flow.cookies}}),env);
-test('closed public homepage, privacy and terms are readable; all customer operations fail closed',async()=>{
- const env={CUSTOMER_ACCESS:'disabled'}; // No database binding: public pages and closed auth must not query it.
- const home=await worker.fetch(request('/'),env);assert.equal(home.status,200);assert.match(await home.text(),/Customer accounts are not open yet/);
- for(const [path,term] of [['/privacy','Privacy Policy'],['/terms','Terms of Service']]){
-  const r=await worker.fetch(request(path),env);assert.equal(r.status,200);assert.match(await r.text(),new RegExp(term));assert.equal(r.headers.get('set-cookie'),null);
+test('closed account homepage and canonical public legal redirects; all customer operations fail closed',async()=>{
+ const env={CUSTOMER_ACCESS:'disabled'};
+ const home=await worker.fetch(request('/'),env);assert.equal(home.status,200);assert.match(home.headers.get('x-robots-tag'),/noindex/);
+ const markup=await home.text();assert.match(markup,/Customer accounts are not open yet/);
+ assert.ok(markup.includes('https://www.projectzero.work/privacy'));assert.ok(markup.includes('https://www.projectzero.work/terms'));
+ for(const path of ['/privacy','/terms','/privacy/','/terms/']){
+  const r=await worker.fetch(request(path),env);assert.equal(r.status,301);assert.equal(r.headers.get('location'),'https://www.projectzero.work'+path.replace(/\/$/,''));assert.equal(r.headers.get('set-cookie'),null);
  }
  for(const path of ['/auth/login','/auth/google/callback','/auth/signup','/api/v1/workspaces'])assert.equal((await worker.fetch(request(path),env)).status,503);
  assert.equal((await worker.fetch(request('/internal/readiness'),env)).status,404);
