@@ -14,7 +14,15 @@ test('baseline source manifest has valid digests',()=>{
 });
 test('public source contains no production UUID literals',()=>{
   for(const name of Object.keys(manifest.workers)) {
-    const source=readFileSync('workers/'+name+'/worker.mjs','utf8');
+    let source=readFileSync('workers/'+name+'/worker.mjs','utf8');
+    if (name === 'projectzero-guides') {
+      // This exact Impact ownership token is intentionally published in the public HTML.
+      // Every other UUID, including any duplicate of this token, remains prohibited.
+      const publicTag='<meta name="impact-site-verification" value="ccb60450-a5bf-4152-8cb9-365881c1b1ec">';
+      assert.ok(source.includes('<head><meta charset="utf-8">'+publicTag));
+      assert.equal(source.split(publicTag).length,2);
+      source=source.replace(publicTag,'');
+    }
     assert.doesNotMatch(source,/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/i);
   }
 });
