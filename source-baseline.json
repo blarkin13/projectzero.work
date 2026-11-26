@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "workers": {
+    "portfolio-owner": {
+      "template_sha256": "5c454e5029afaf899af537ad36c9299773edf4c94edc9311d08d80c70ac18027",
+      "replacements": 24
+    },
+    "portfolio-tracker-api": {
+      "template_sha256": "bef3ccde0449616ef0a4ef830d8287f7d1379331c514fa668839a9716ef92316",
+      "replacements": 0
+    },
+    "portfolio-brand-edge": {
+      "template_sha256": "ceb5a0c23b0475cf000534a486050a97d31f41a120105e91b9d4caf2bf081c62",
+      "replacements": 0
+    },
+    "projectzero-commercial": {
+      "template_sha256": "99b516658e230db4b906d0cb9238402433e2a1ecefe3ae44c77a783b04ac6b0d",
+      "replacements": 0
+    },
+    "projectzero-guides": {
+      "template_sha256": "e5ce4fe10d3fd81e09072c83a88f535f4ca8492fd2b950be9616fb0dbd1f4093",
+      "replacements": 1
+    }
+  }
+}
