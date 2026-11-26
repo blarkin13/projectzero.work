@@ -4,13 +4,13 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import worker from '../workers/projectzero-commercial/worker.mjs';
 const HOST='https://account.projectzero.work';
-const fixtures=['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql','schema/migrations/002-free-beta.sql'];
+const fixtures=['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql','schema/migrations/002-free-beta.sql','schema/migrations/003-beta-invitations.sql'];
 const secret='test-turnstile-secret-not-for-production';
 function fixture(){
  const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON');for(const f of fixtures)sql.exec(readFileSync(f,'utf8'));
- sql.exec(readFileSync(fixtures.at(-1),'utf8'));
+ sql.exec(readFileSync(fixtures.at(-2),'utf8'));
  const inbox=[],prepare=s=>({bind(...a){return {async first(){return sql.prepare(s).get(...a)||null},async all(){return {results:sql.prepare(s).all(...a)}},runSync(){return {meta:{changes:Number(sql.prepare(s).run(...a).changes)}}},async run(){return this.runSync()}}}});
- const env={CUSTOMER_ACCESS:'beta',EMAIL_LOGIN_MODE:'open_beta',TURNSTILE_SITE_KEY:'test-site-key123',TURNSTILE_SECRET:secret,BETA_AUTH_LIMIT:{limit:async()=>({success:true})},BETA_EMAIL:{send:async m=>{inbox.push(m);return {messageId:'test-only'}}},COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}}};
+ const env={CUSTOMER_ACCESS:'beta',EMAIL_LOGIN_MODE:'invite_only',TURNSTILE_SITE_KEY:'test-site-key123',TURNSTILE_SECRET:secret,BETA_AUTH_LIMIT:{limit:async()=>({success:true})},BETA_EMAIL:{send:async m=>{inbox.push(m);return {messageId:'test-only'}}},COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}}};
  const req=(path,{method='GET',cookie,origin=HOST,form,body,ip='192.0.2.1',config=env}={})=>{
   const headers={'CF-Connecting-IP':ip};if(cookie)headers.cookie=cookie;if(origin)headers.origin=origin;
   let data;if(form){headers['content-type']='application/x-www-form-urlencoded';data=new URLSearchParams(form)}else if(body){headers['content-type']='application/json';data=JSON.stringify(body)}
@@ -25,13 +25,15 @@ function fixture(){
   return Response.json({success,action,hostname});
  };
  let next=0;
- const codeRequest=(email,opts={})=>req('/auth/email',{method:'POST',form:{email,accept:'yes','cf-turnstile-response':'proof-'+(++next)},...opts});
+ const dbHash=async s=>Buffer.from(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))).toString('hex');
+ const invite=async email=>{email=email.trim().toLowerCase();const code=Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url'),now=Math.floor(Date.now()/1000);sql.prepare('INSERT INTO beta_invitations(id,code_hash,email,created_at,expires_at) VALUES(?,?,?,?,?)').run(crypto.randomUUID(),await dbHash(code),email,now,now+86400);return code};
+ const codeRequest=async(email,opts={})=>{const code=opts.invite===undefined?await invite(email):opts.invite;return req('/auth/email',{method:'POST',form:{email,invite:code,accept:'yes','cf-turnstile-response':'proof-'+(++next)},...opts});};
  const codeVerify=(cookie,code,opts={})=>req('/auth/verify',{method:'POST',cookie,form:{code},...opts});
  const code=()=>inbox.at(-1).text.match(/\b\d{8}\b/)[0];
  const nextCookie=r=>r.headers.getSetCookie().find(c=>c.startsWith('__Host-pz_beta_challenge=')).split(';')[0];
  const sessionCookie=r=>r.headers.getSetCookie().find(c=>c.startsWith('__Host-pz_session=')).split(';')[0];
  const signin=async email=>{const send=await codeRequest(email);assert.equal(send.status,303,await send.clone().text());const proof=nextCookie(send),pass=code();const confirm=await codeVerify(proof,pass);assert.equal(confirm.status,303,await confirm.clone().text());const cookie=sessionCookie(confirm);const list=await req('/api/v1/workspaces',{cookie});const workspaces=(await list.json()).workspaces;assert.equal(workspaces.length,1);return {cookie,workspace:workspaces[0].id,proof,pass}};
- return {sql,env,req,inbox,codeRequest,codeVerify,code,nextCookie,sessionCookie,signin,bot:(v,a,h)=>{valid=v;action=a;hostname=h},close(){globalThis.fetch=mock;sql.close()}};
+ return {sql,env,req,inbox,invite,dbHash,codeRequest,codeVerify,code,nextCookie,sessionCookie,signin,bot:(v,a,h)=>{valid=v;action=a;hostname=h},close(){globalThis.fetch=mock;sql.close()}};
 }
 test('beta signup is closed unless all email and verification gates are present',async()=>{
  const f=fixture();try{
@@ -49,7 +51,7 @@ test('signup requires same origin, accepted terms, valid email and successful si
   f.bot(true,'other_action','account.projectzero.work');assert.equal((await f.codeRequest('a@example.invalid')).status,403);
   f.bot(true,'beta_email','evil.invalid');assert.equal((await f.codeRequest('a@example.invalid')).status,403);
   assert.equal(f.inbox.length,0);assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);
-  f.bot(true,'beta_email','account.projectzero.work');const form={email:'a@example.invalid',accept:'yes','cf-turnstile-response':'once'};assert.equal((await f.codeRequest('a@example.invalid',{form})).status,303);assert.equal((await f.codeRequest('a@example.invalid',{form})).status,403);
+  f.bot(true,'beta_email','account.projectzero.work');const form={email:'a@example.invalid',invite:await f.invite('a@example.invalid'),accept:'yes','cf-turnstile-response':'once'};assert.equal((await f.codeRequest('a@example.invalid',{form})).status,303);assert.equal((await f.codeRequest('a@example.invalid',{form})).status,403);
   assert.equal(f.inbox.length,1);
  }finally{f.close()}
 });
@@ -72,7 +74,7 @@ test('verified code creates one free account and workspace, replay or wrong brow
   const created=await f.req('/api/v1/workspaces/'+workspace+'/projects',{cookie,method:'POST',body:projectBody});assert.equal(created.status,201);
   assert.equal((await f.req('/auth/logout',{cookie,method:'POST'})).status,303);
   assert.equal((await f.req('/api/v1/workspaces',{cookie})).status,401);
-  const again=await f.signin('user@example.invalid');assert.equal(again.workspace,workspace);
+  const existingSend=await f.codeRequest('user@example.invalid',{invite:''});assert.equal(existingSend.status,303);const againConfirm=await f.codeVerify(f.nextCookie(existingSend),f.code());assert.equal(againConfirm.status,303);const again={cookie:f.sessionCookie(againConfirm),workspace};assert.equal(again.workspace,workspace);
   assert.equal((await (await f.req('/api/v1/workspaces/'+workspace+'/projects',{cookie:again.cookie})).json()).projects[0].name,'Example');
   assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM users').get().n,1);
  }finally{f.close()}
@@ -135,5 +137,27 @@ test('native per-IP rate limit and expired-state maintenance',async()=>{
   const send=await f.codeRequest('a@example.invalid');assert.equal(send.status,303);
   f.sql.exec('UPDATE beta_email_challenges SET expires_at=0;UPDATE beta_email_limits SET expires_at=0');
   await worker.scheduled({},f.env);assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM beta_email_challenges').get().n,0);assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM beta_email_limits').get().n,0);
+ }finally{f.close()}
+});
+
+test('new testers cannot register without a valid email-bound invite; expiry and revoke are checked again at verification',async()=>{
+ const f=fixture();try{
+  const email='approved@example.invalid';
+  assert.equal((await f.codeRequest(email,{invite:''})).status,403);
+  const invitation=await f.invite(email);
+  assert.equal((await f.codeRequest('other@example.invalid',{invite:invitation})).status,403);
+  assert.equal(f.inbox.length,0);
+  const send=await f.codeRequest(email,{invite:invitation});assert.equal(send.status,303);
+  f.sql.exec("UPDATE beta_invitations SET revoked_at=1");
+  assert.equal((await f.codeVerify(f.nextCookie(send),f.code())).status,409);
+  assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);
+  const fresh=await f.invite(email),send2=await f.codeRequest(email,{invite:fresh});assert.equal(send2.status,303);
+  const resp=await f.codeVerify(f.nextCookie(send2),f.code());assert.equal(resp.status,303);
+  assert.equal(f.sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE redeemed_at IS NOT NULL').get().n,1);
+  const cookie=f.sessionCookie(resp);
+  assert.equal((await f.req('/admin/beta',{cookie})).status,404);
+  assert.equal((await f.req('/admin/beta',{cookie,method:'POST',form:{action:'issue',email:'evil@example.invalid'}})).status,404);
+  const owner='owner@example.invalid';f.env.OWNER_EMAIL=owner;
+  assert.equal((await f.codeRequest(owner,{invite:await f.invite(owner)})).status,403);
  }finally{f.close()}
 });

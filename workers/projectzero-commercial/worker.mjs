@@ -108,24 +108,30 @@ const secureHeaders={'x-robots-tag':'noindex, nofollow','content-type':'text/htm
 function page(title,body,status=200,headers={}){
  return new Response('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+title+' | Project Zero</title><meta name="description" content="Project Zero account information, privacy and terms."><style>:root{color-scheme:light;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#191919;background:#fafafa}*{box-sizing:border-box}body{margin:0}header,footer{padding:22px 24px;background:#fff;border-bottom:1px solid #e2e2e2}header a{font-size:22px;font-weight:750;text-decoration:none;color:#191919}main{max-width:780px;margin:0 auto;padding:50px 24px 64px}h1{font-size:clamp(29px,6vw,44px);line-height:1.15;letter-spacing:-.035em;margin:0 0 16px}h2{font-size:21px;margin:32px 0 10px}p,li{line-height:1.65;color:#333}a{color:#191919;text-underline-offset:3px}footer{border-top:1px solid #e2e2e2;border-bottom:0;display:flex;gap:20px;flex-wrap:wrap;font-size:14px}.button{display:inline-block;border:1px solid #191919;border-radius:7px;padding:12px 18px;background:#191919;color:white;text-decoration:none;margin-top:12px;min-height:44px}.muted{color:#575757;font-size:14px}.notice{padding:16px 20px;border:1px solid #ddd;border-radius:8px;background:white}.brand{letter-spacing:-.035em}</style></head><body><header><a class="brand" href="/">Project Zero.</a></header><main>'+body+'</main><footer><a href="/">Account home</a><a href="https://www.projectzero.work/privacy">Privacy Policy</a><a href="https://www.projectzero.work/terms">Terms of Service</a><a href="https://www.projectzero.work/">Project Zero website</a><a href="mailto:support@projectzero.work">Support</a></footer></body></html>',{status,headers:{...secureHeaders,...headers}});
 }
-const googleClientId=env=>env.PZW_GOOGLE_CLIENT_ID||env.GOOGLE_CLIENT_ID;
-const googleClientSecret=env=>env.PZW_GOOGLE_CLIENT_SECRET||env.GOOGLE_CLIENT_SECRET;
-const googleRate=env=>env.AUTH_RATE_LIMIT||env.BETA_AUTH_LIMIT;
 const googleBetaMode=env=>env.CUSTOMER_ACCESS==='beta'&&env.GOOGLE_LOGIN_MODE==='beta_invite';
-function googleReady(env){const id=googleClientId(env),secret=googleClientSecret(env);return ((env.CUSTOMER_ACCESS==='enabled'&&env.GOOGLE_LOGIN_MODE==='invite_only')||googleBetaMode(env))&&typeof id==='string'&&/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(id)&&typeof secret==='string'&&secret.length>0&&secret.length<1024&&token43(env.GOOGLE_OAUTH_STATE_KEY)&&typeof googleRate(env)?.limit==='function'&&(!googleBetaMode(env)||!!normalizeEmail(env.OWNER_EMAIL))}
-const betaMode=env=>emailReady(env)||(googleBetaMode(env)&&googleReady(env));
-function googleBetaPage(message='',status=200){return betaPage('Sign in with Google','<h1>Sign in to Project Zero</h1><p>Free, invitation-only beta. No credit card or paid plan required.</p>'+(message?'<p class="error" role="alert">'+escapeHTML(message)+'</p>':'')+'<form method="post" action="/auth/login"><label><input type="checkbox" name="accept" value="yes" required> I agree to the <a href="https://www.projectzero.work/terms">Terms of Service</a> and have read the <a href="https://www.projectzero.work/privacy">Privacy Policy</a>.</label><button class="button" type="submit">Sign in with Google</button></form><p>Not invited yet? <a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">Request beta access</a>.</p>',status,{'referrer-policy':'same-origin','content-security-policy':secureHeaders['content-security-policy'].replace("form-action 'self'","form-action 'self' https://accounts.google.com")})}
+function googleEnv(env){
+ const ownerMode=googleBetaMode(env)&&!!normalizeEmail(env.OWNER_EMAIL);
+ if(!ownerMode&&!(env.CUSTOMER_ACCESS==='enabled'&&env.GOOGLE_LOGIN_MODE==='invite_only'))return null;
+ const g=ownerMode?{...env,GOOGLE_CLIENT_ID:env.PZW_GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET:env.PZW_GOOGLE_CLIENT_SECRET,AUTH_RATE_LIMIT:env.BETA_AUTH_LIMIT}:env;
+ return typeof g.GOOGLE_CLIENT_ID==='string'&&/^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$/.test(g.GOOGLE_CLIENT_ID)&&typeof g.GOOGLE_CLIENT_SECRET==='string'&&g.GOOGLE_CLIENT_SECRET.length>0&&g.GOOGLE_CLIENT_SECRET.length<1024&&token43(g.GOOGLE_OAUTH_STATE_KEY)&&typeof g.AUTH_RATE_LIMIT?.limit==='function'?g:null;
+}
+function googleReady(env){return !!googleEnv(env)}
+const betaMode=env=>env.CUSTOMER_ACCESS==='beta';
+function googleBetaPage(message='',status=200){return betaPage('Sign in with Google','<h1>Sign in to Project Zero</h1><p>Free, invitation-only beta. No credit card or paid plan required.</p>'+(message?'<p class="error" role="alert">'+escapeHTML(message)+'</p>':'')+'<form method="post" action="/auth/login"><label>Invitation code (new testers only) <input type="text" name="invite" maxlength="43" autocomplete="off" spellcheck="false"></label><label><input type="checkbox" name="accept" value="yes" required> I agree to the <a href="https://www.projectzero.work/terms">Terms of Service</a> and have read the <a href="https://www.projectzero.work/privacy">Privacy Policy</a>.</label><button class="button" type="submit">Sign in with Google</button></form><p>Already registered or the owner? Leave the invitation field blank. <a href="/auth/signup">Sign in with email instead</a>.</p><p>Not invited yet? <a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">Request beta access</a>.</p>',status,{'referrer-policy':'same-origin','content-security-policy':secureHeaders['content-security-policy'].replace("form-action 'self'","form-action 'self' https://accounts.google.com"),...(status===403?{'set-cookie':clearState()}:{} )})}
+async function isBetaOwner(db,user,env){
+ const email=normalizeEmail(env.OWNER_EMAIL);if(!email||env.CUSTOMER_ACCESS!=='beta')return false;
+ return !!await db.prepare("SELECT 1 FROM users u JOIN beta_accounts b ON b.user_id=u.id WHERE u.id=? AND lower(u.email)=? AND u.oidc_subject LIKE 'google:%' AND u.disabled_at IS NULL").bind(user.id,email).first();
+}
 async function accountHome(req,env){
  const ready=authReady(env),signedIn=ready&&await session(req,env.COMMERCIAL_DB);
  let body='<h1>Manage your businesses with Project Zero.</h1><p>Organize business projects, development priorities, and operational insights in one executive workspace.</p>';
  if(signedIn){
   const workspaces=await rows(env.COMMERCIAL_DB.prepare('SELECT w.id,w.name,m.role FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=? AND w.deleted_at IS NULL ORDER BY w.name LIMIT 100').bind(signedIn.id));
   const beta=betaMode(env)?await betaWorkspace(env.COMMERCIAL_DB,signedIn):null;
-  body+='<div class="notice"><strong>You are signed in.</strong><p>'+ (beta?'Free beta · No billing or payment details.':'Authorized workspace access is available for private evaluation.')+'</p><ul class="workspace-list">'+workspaces.filter(w=>validId(w.id)).map(w=>'<li><a class="button" href="/workspaces/'+escapeHTML(w.id)+'/setup">'+escapeHTML(w.name)+' →</a></li>').join('')+'</ul><form method="post" action="/auth/logout"><button class="button" type="submit">Sign out</button></form></div>'+(beta?'<p><a href="/account/export">Export my data</a> · <a href="/account/delete">Delete my beta account</a></p>':'');
- }else if(googleBetaMode(env)&&googleReady(env)){
-  body+='<div class="notice"><strong>FREE BETA · BY INVITATION</strong><p>Sign in with your approved Google account to try real, saved projects. No credit card or subscription.</p><a class="button" href="/auth/login">Sign in with Google</a><p><a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">Request beta access</a></p></div>';
- }else if(emailReady(env)){
-  body+='<div class="notice"><strong>OPEN BETA · FREE</strong><p>Create an account and try real, saved projects. No credit card, paid plan or subscription. Space is limited.</p><a class="button" href="/auth/signup">Create free account / Sign in</a></div>';
+  const owner=beta&&await isBetaOwner(env.COMMERCIAL_DB,signedIn,env);
+  body+='<div class="notice"><strong>You are signed in.</strong><p>'+ (beta?'Free beta · No billing or payment details.':'Authorized workspace access is available for private evaluation.')+'</p><ul class="workspace-list">'+workspaces.filter(w=>validId(w.id)).map(w=>'<li><a class="button" href="/workspaces/'+escapeHTML(w.id)+'/setup">'+escapeHTML(w.name)+' →</a></li>').join('')+'</ul><form method="post" action="/auth/logout"><button class="button" type="submit">Sign out</button></form></div>'+(beta?'<p><a href="/account/export">Export my data</a>'+(owner?' · <a href="/admin/beta">Manage beta invitations</a>':' · <a href="/account/delete">Delete my beta account</a>')+'</p>':'');
+ }else if(betaMode(env)&&ready){
+  body+='<div class="notice"><strong>INVITATION-ONLY BETA · FREE</strong><p>Already invited? Use your personal invitation code to create an account. Registered testers and the owner can sign in without a code.</p>'+(googleReady(env)?'<a class="button" href="/auth/login">Sign in with Google</a>':'')+(emailReady(env)?'<a class="button" href="/auth/signup">Sign in with email</a>':'')+'<p>Need an invitation? <a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">Request beta access by email</a>.</p></div>';
  }else if(ready){body+='<p>Private invited users can sign in using their authorized Google account.</p><a class="button" href="/auth/login">Sign in with Google</a>'}
  else{body+='<div class="notice"><strong>Customer accounts are not open yet.</strong><p>Project Zero is preparing secure account access. No registration or billing is available.</p></div>'}
  return betaPage('Account',body+'<p>Learn how we handle account information in our <a href="https://www.projectzero.work/privacy">Privacy Policy</a> and <a href="https://www.projectzero.work/terms">Terms of Service</a>.</p>');
@@ -134,17 +140,18 @@ async function stateKey(env){return crypto.subtle.importKey('raw',unb64(env.GOOG
 async function sealVerifier(env,verifier,stateHash){const iv=crypto.getRandomValues(new Uint8Array(12));const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:utf8.encode(stateHash)},await stateKey(env),utf8.encode(verifier));return b64url(iv)+'.'+b64url(new Uint8Array(cipher))}
 async function openVerifier(env,cipher,stateHash){const [iv,data,...rest]=cipher.split('.');if(rest.length||!iv||!data)throw Error('state');const verified=decode.decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(iv),additionalData:utf8.encode(stateHash)},await stateKey(env),unb64(data)));if(!token43(verified))throw Error('state');return verified}
 function authFailure(status=400){return page('Sign-in unavailable','<h1>Unable to sign in</h1><p>Sign-in could not be completed. Return to the account page to try again.</p><a href="/">Return to account</a>',status,{'set-cookie':clearState()})}
-async function allowedAuthAttempt(req,env){const ip=req.headers.get('CF-Connecting-IP');if(!ip||ip.length>64)return false;const result=await googleRate(env).limit({key:ip});return result?.success===true}
-async function login(req,env){
- if(!googleReady(env))return authFailure(503);
+async function allowedAuthAttempt(req,env){const ip=req.headers.get('CF-Connecting-IP');if(!ip||ip.length>64)return false;const result=await env.AUTH_RATE_LIMIT.limit({key:ip});return result?.success===true}
+async function login(req,env,inviteHash=null){
+ const g=googleEnv(env);if(!g)return authFailure(503);env=g;
  if(!await allowedAuthAttempt(req,env))return authFailure(429);
  const state=randomToken(),nonce=randomToken(),verifier=randomToken(),stateHash=await hash(state),now=Math.floor(Date.now()/1000);
  const ciphertext=await sealVerifier(env,verifier,stateHash);
  // Remove expired/used records without retaining Google credentials.
  await env.COMMERCIAL_DB.prepare('DELETE FROM oauth_states WHERE expires_at<=? OR used_at IS NOT NULL').bind(now).run();
- await env.COMMERCIAL_DB.prepare('INSERT INTO oauth_states(state_hash,verifier_ciphertext,nonce_hash,expires_at) VALUES(?,?,?,?)').bind(stateHash,ciphertext,await hash(nonce),now+600).run();
+ if(googleBetaMode(env))await env.COMMERCIAL_DB.prepare('INSERT INTO oauth_states(state_hash,verifier_ciphertext,nonce_hash,expires_at,invite_hash) VALUES(?,?,?,?,?)').bind(stateHash,ciphertext,await hash(nonce),now+600,inviteHash).run();
+ else await env.COMMERCIAL_DB.prepare('INSERT INTO oauth_states(state_hash,verifier_ciphertext,nonce_hash,expires_at) VALUES(?,?,?,?)').bind(stateHash,ciphertext,await hash(nonce),now+600).run();
  const url=new URL(GOOGLE_AUTH);
- for(const [key,val] of Object.entries({client_id:googleClientId(env),redirect_uri:CALLBACK,response_type:'code',scope:'openid email',state,nonce,code_challenge:b64url(await digest(verifier)),code_challenge_method:'S256',prompt:'select_account'}))url.searchParams.set(key,val);
+ for(const [key,val] of Object.entries({client_id:env.GOOGLE_CLIENT_ID,redirect_uri:CALLBACK,response_type:'code',scope:'openid email',state,nonce,code_challenge:b64url(await digest(verifier)),code_challenge_method:'S256',prompt:'select_account'}))url.searchParams.set(key,val);
  return new Response(null,{status:302,headers:{location:url.href,'cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':cookieValue('__Host-pz_oauth',state,600)}});
 }
 async function limitedJson(url,options={},max=65536){
@@ -168,23 +175,31 @@ async function verifyGoogleIdToken(token,clientId,nonceHash,now){
  return {sub:c.sub,email:c.email,authoritativeEmail:c.email.toLowerCase().endsWith('@gmail.com')||(typeof c.hd==='string'&&c.hd.length>0)};
 }
 async function callback(req,env,u){
- if(!googleReady(env))return authFailure(503);
+ const g=googleEnv(env);if(!g)return authFailure(503);env=g;
  if(!await allowedAuthAttempt(req,env))return authFailure(429);
  const state=u.searchParams.get('state'),code=u.searchParams.get('code');
  if(!token43(state)||u.searchParams.getAll('state').length!==1||cookie(req,'__Host-pz_oauth')!==state||u.searchParams.has('error')||u.searchParams.getAll('code').length!==1||typeof code!=='string'||!code||code.length>4096)return authFailure();
  const db=env.COMMERCIAL_DB,now=Math.floor(Date.now()/1000),stateHash=await hash(state);
  // UPDATE RETURNING makes the state single-use across concurrent requests.
- const row=await db.prepare('UPDATE oauth_states SET used_at=? WHERE state_hash=? AND used_at IS NULL AND expires_at>? RETURNING verifier_ciphertext,nonce_hash').bind(now,stateHash,now).first();
+ const row=await db.prepare('UPDATE oauth_states SET used_at=? WHERE state_hash=? AND used_at IS NULL AND expires_at>? RETURNING verifier_ciphertext,nonce_hash'+(googleBetaMode(env)?',invite_hash':'')).bind(now,stateHash,now).first();
  if(!row)return authFailure();
  try{
   const verifier=await openVerifier(env,row.verifier_ciphertext,stateHash);
-  const body=new URLSearchParams({code,client_id:googleClientId(env),client_secret:googleClientSecret(env),redirect_uri:CALLBACK,grant_type:'authorization_code',code_verifier:verifier});
+  const body=new URLSearchParams({code,client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,redirect_uri:CALLBACK,grant_type:'authorization_code',code_verifier:verifier});
   const tokens=await limitedJson(GOOGLE_TOKEN,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body});
-  const claims=await verifyGoogleIdToken(tokens.id_token,googleClientId(env),row.nonce_hash,Math.floor(Date.now()/1000));
+  const claims=await verifyGoogleIdToken(tokens.id_token,env.GOOGLE_CLIENT_ID,row.nonce_hash,Math.floor(Date.now()/1000));
   if(!claims)return authFailure(401);
-  // The beta uses a separate, approved identity and workspace; never grant owner-dashboard privileges.
-  const user=googleBetaMode(env)?await googleBetaIdentity(db,env,claims):await db.prepare('SELECT u.id FROM users u WHERE u.oidc_subject=? AND lower(u.email)=lower(?) AND u.disabled_at IS NULL AND EXISTS (SELECT 1 FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=u.id AND w.deleted_at IS NULL)').bind(claims.sub,claims.email).first();
-  if(!user)return googleBetaMode(env)?betaPage('Beta access','<h1>Beta access requires an invitation</h1><p>Use your invited Google account or <a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">request beta access</a>. Existing email-only accounts can request help switching methods.</p><p><a href="/">Return to account</a></p>',403,{'set-cookie':clearState()}):authFailure(403);
+  // Bind Google's stable subject; first-time accounts require authoritative email
+  // and a valid invitation for that address, or the configured owner's email.
+  let user;
+  if(googleBetaMode(env)){
+   const email=normalizeEmail(claims.email);
+   if(!email)return authFailure(403);
+   const subject='google:'+claims.sub;
+   user=await findBetaIdentity(db,email,subject);
+   if(!user&&claims.authoritativeEmail)user=await betaIdentity(db,email,row.invite_hash,subject,email===normalizeEmail(env.OWNER_EMAIL));
+  }else user=await db.prepare('SELECT u.id FROM users u WHERE u.oidc_subject=? AND lower(u.email)=lower(?) AND u.disabled_at IS NULL AND EXISTS (SELECT 1 FROM memberships m JOIN workspaces w ON w.id=m.workspace_id WHERE m.user_id=u.id AND w.deleted_at IS NULL)').bind(claims.sub,claims.email).first();
+  if(!user)return googleBetaMode(env)?googleBetaPage('Use the Google account that was invited, or request beta access. For non-Gmail/non-Workspace addresses use email verification.',403):authFailure(403);
   const sessionToken=randomToken(),sessionHash=await hash(sessionToken);
   await db.prepare('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)').bind(sessionHash,user.id,now+43200).run();
   const headers=new Headers({location:'/','cache-control':'no-store','referrer-policy':'no-referrer'});headers.append('set-cookie',clearState());headers.append('set-cookie',cookieValue('__Host-pz_session',sessionToken,43200));
@@ -205,7 +220,7 @@ const BETA_TERMS='2026-11-26-beta-v1', BETA_MAX_ACCOUNTS=100, BETA_CODE_TTL=600;
 const BETA_SENDER='signin@auth.projectzero.work';
 const BETA_COOKIE='__Host-pz_beta_challenge';
 function emailReady(env){
- return env.CUSTOMER_ACCESS==='beta'&&!googleBetaMode(env)&&env.EMAIL_LOGIN_MODE==='open_beta'&&typeof env.BETA_EMAIL?.send==='function'&&typeof env.BETA_AUTH_LIMIT?.limit==='function'&&typeof env.TURNSTILE_SITE_KEY==='string'&&/^[A-Za-z0-9_-]{10,100}$/.test(env.TURNSTILE_SITE_KEY)&&typeof env.TURNSTILE_SECRET==='string'&&env.TURNSTILE_SECRET.length>10;
+ return env.CUSTOMER_ACCESS==='beta'&&env.EMAIL_LOGIN_MODE==='invite_only'&&typeof env.BETA_EMAIL?.send==='function'&&typeof env.BETA_AUTH_LIMIT?.limit==='function'&&typeof env.TURNSTILE_SITE_KEY==='string'&&/^[A-Za-z0-9_-]{10,100}$/.test(env.TURNSTILE_SITE_KEY)&&typeof env.TURNSTILE_SECRET==='string'&&env.TURNSTILE_SECRET.length>10;
 }
 function authReady(env){return googleReady(env)||emailReady(env)}
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -213,7 +228,7 @@ const betaCookie=(v,secs)=>cookieValue(BETA_COOKIE,v,secs);
 const betaFormCSS='label{display:block;margin:12px 0}input[type=email],input[type=text]{font:inherit;padding:10px;border:1px solid #aaa;border-radius:7px;width:100%;max-width:380px;min-height:44px}button.button{font:inherit;cursor:pointer}a.button{margin-right:6px}.error{color:#923b2c}ul.workspace-list{padding-left:20px}';
 function betaPage(title,body,status=200,headers={},challenge=false){
  const csp=secureHeaders['content-security-policy']+(challenge?"; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com":"");
- return page(title,'<style>'+betaFormCSS+'</style>'+body,status,{'content-security-policy':csp,...headers});
+ return page(title,'<style>'+betaFormCSS+'</style>'+body,status,{'content-security-policy':csp,'referrer-policy':'same-origin',...headers});
 }
 async function boundedForm(req,max=4096){
  if(!/^application\/x-www-form-urlencoded(?:;|$)/i.test(req.headers.get('content-type')||'')||Number(req.headers.get('content-length')||0)>max||!req.body)return null;
@@ -244,7 +259,7 @@ async function emailBudget(db,req,email,now){
  return await takeBudget(db,'to:'+addr,day,3,dayEnd)&&await takeBudget(db,'ip:'+ip,day,8,dayEnd)&&await takeBudget(db,'global-day',day,30,dayEnd)&&await takeBudget(db,'global-month',month,300,monthEnd);
 }
 function signupPage(env,message='',status=200){
- return betaPage('Free beta','<h1>Join the free beta.</h1><p>Create your own private workspace, save up to three projects, generate instructions and track development tasks. No subscription or credit card required.</p>'+(message?'<p class="error" role="alert">'+escapeHTML(message)+'</p>':'')+'<form method="post" action="/auth/email"><label>Email address <input type="email" name="email" maxlength="254" autocomplete="email" required></label><label><input type="checkbox" name="accept" value="yes" required> I agree to the <a href="https://www.projectzero.work/terms">Terms of Service</a> and have read the <a href="https://www.projectzero.work/privacy">Privacy Policy</a>.</label><div class="cf-turnstile" data-sitekey="'+env.TURNSTILE_SITE_KEY+'" data-action="beta_email"></div><button class="button" type="submit">Email my sign-in code</button></form><p class="muted">Already have a beta account? Use the same email to sign in. Enter the code in this browser. Beta access is limited; don’t store passwords, credentials or sensitive client data.</p><p><a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta">Contact us</a></p><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',status,{},true);
+ return betaPage('Free beta','<h1>Sign in or redeem your beta invitation.</h1><p>Invitation-only free access. No subscription or credit card required.</p>'+(message?'<p class="error" role="alert">'+escapeHTML(message)+'</p>':'')+'<form method="post" action="/auth/email"><label>Email address <input type="email" name="email" maxlength="254" autocomplete="email" required></label><label>Invitation code (new accounts only) <input type="text" name="invite" maxlength="43" autocomplete="off" spellcheck="false"></label><label><input type="checkbox" name="accept" value="yes" required> I agree to the <a href="https://www.projectzero.work/terms">Terms of Service</a> and have read the <a href="https://www.projectzero.work/privacy">Privacy Policy</a>.</label><div class="cf-turnstile" data-sitekey="'+env.TURNSTILE_SITE_KEY+'" data-action="beta_email"></div><button class="button" type="submit">Email my sign-in code</button></form><p class="muted">Already have a beta account? Leave the invitation code blank. Enter your emailed sign-in code in this browser. Don’t store passwords, credentials or sensitive client data.</p><p><a href="mailto:contact@projectzero.work?subject=Project%20Zero%20beta%20request">Request an invitation</a></p><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>',status,{},true);
 }
 function verifyPage(message='',status=200){
  return betaPage('Check your email','<h1>Check your email.</h1><p>Enter the eight-digit sign-in code we sent. It expires in ten minutes. You may need to check your spam folder.</p>'+(message?'<p class="error" role="alert">'+escapeHTML(message)+'</p>':'')+'<form method="post" action="/auth/verify"><label>Sign-in code <input type="text" name="code" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="one-time-code" required></label><button class="button" type="submit">Continue to my workspace</button></form><p><a href="/auth/signup">Request another code</a></p>',status);
@@ -257,9 +272,18 @@ async function requestBetaCode(req,env,u){
  if(!await verifyBot(req,env,form.get('cf-turnstile-response')))return signupPage(env,'Complete the security check and try again.',403);
  const db=env.COMMERCIAL_DB,now=nowSeconds();
  await cleanupBeta(db,now);
+ // The owner uses Google. New testers must hold an unexpired invitation for this mailbox.
+ if(email===normalizeEmail(env.OWNER_EMAIL))return signupPage(env,'Please use owner sign in with Google on the account page.',403);
+ const existing=await findBetaIdentity(db,email);
+ const invite=form.get('invite')?.trim()||'';let inviteHash=null;
+ if(!existing){
+  if(!token43(invite))return signupPage(env,'An approved invitation is required for new accounts. Request access by email.',403);
+  inviteHash=await hash(invite);
+  if(!await validInvite(db,inviteHash,email,now))return signupPage(env,'An approved invitation is required for new accounts. Request access by email.',403);
+ }
  if(!await emailBudget(db,req,email,now))return signupPage(env,'Too many requests. Please try again later.',429);
  const challenge=randomToken(),code=randomCode(),challengeHash=await hash(challenge);
- await db.prepare('INSERT INTO beta_email_challenges(challenge_hash,email,code_hash,expires_at) VALUES(?,?,?,?)').bind(challengeHash,email,await hash(challenge+':'+code),now+BETA_CODE_TTL).run();
+ await db.prepare('INSERT INTO beta_email_challenges(challenge_hash,email,code_hash,expires_at,invite_hash) VALUES(?,?,?,?,?)').bind(challengeHash,email,await hash(challenge+':'+code),now+BETA_CODE_TTL,inviteHash).run();
  try{
   await env.BETA_EMAIL.send({to:email,from:{email:BETA_SENDER,name:'Project Zero'},replyTo:'contact@projectzero.work',subject:'Your Project Zero beta sign-in code',text:'Your Project Zero sign-in code is '+code+'. Enter it in the browser where you requested it. It expires in 10 minutes. If you did not request this code, ignore this email. Never share the code.'});
  }catch{
@@ -268,32 +292,30 @@ async function requestBetaCode(req,env,u){
  }
  return new Response(null,{status:303,headers:{location:'/auth/verify','cache-control':'no-store','referrer-policy':'no-referrer','set-cookie':betaCookie(challenge,BETA_CODE_TTL)}});
 }
-async function googleBetaIdentity(db,env,claims){
- const email=normalizeEmail(claims.email);
- if(!email)return null;
- const subject='google:'+claims.sub;
- // A returning Google identity must match its original stable subject and beta membership.
- const found=await betaIdentity(db,email,subject,false);if(found)return found;
- const approved=[env.OWNER_EMAIL,...String(env.GOOGLE_BETA_INVITES||'').split(',')].map(normalizeEmail).filter(Boolean);
- if(!claims.authoritativeEmail||!approved.includes(email))return null;
- return betaIdentity(db,email,subject,true);
-}
-async function betaIdentity(db,email,subject=null,allowCreate=true){
+async function findBetaIdentity(db,email,subject){
  subject=subject||'email:'+await hash(email);
- const lookup=()=>db.prepare('SELECT u.id,b.workspace_id FROM users u JOIN beta_accounts b ON b.user_id=u.id JOIN workspaces w ON w.id=b.workspace_id JOIN memberships m ON m.workspace_id=w.id AND m.user_id=u.id JOIN workspace_entitlements e ON e.workspace_id=w.id WHERE u.oidc_subject=? AND u.email=? AND u.disabled_at IS NULL AND w.deleted_at IS NULL AND m.role=\'owner\' AND e.state=\'active\'').bind(subject,email).first();
- const found=await lookup();if(found||!allowCreate)return found;
- const id=crypto.randomUUID(),wid=crypto.randomUUID();
- // Atomic claim of one account; never link a pre-existing Google identity by email.
+ return db.prepare("SELECT u.id,b.workspace_id FROM users u JOIN beta_accounts b ON b.user_id=u.id JOIN workspaces w ON w.id=b.workspace_id JOIN memberships m ON m.workspace_id=w.id AND m.user_id=u.id JOIN workspace_entitlements e ON e.workspace_id=w.id WHERE u.oidc_subject=? AND u.email=? AND u.disabled_at IS NULL AND w.deleted_at IS NULL AND m.role='owner' AND e.state='active'").bind(subject,email).first();
+}
+const validInvite=(db,h,email,now)=>db.prepare('SELECT id FROM beta_invitations WHERE code_hash=? AND email=? AND expires_at>? AND redeemed_at IS NULL AND revoked_at IS NULL').bind(h,email,now).first();
+async function betaIdentity(db,email,inviteHash=null,googleSubject=null,ownerAllowed=false){
+ const subject=googleSubject||'email:'+await hash(email);
+ const found=await findBetaIdentity(db,email,subject);if(found)return found;
+ if(!ownerAllowed&&!token43Hash(inviteHash))return null;
+ const id=crypto.randomUUID(),wid=crypto.randomUUID(),now=nowSeconds();
+ // D1 batch is atomic; recheck invitation right at provisioning and consume it only for a newly created identity.
+ const gate=ownerAllowed?'1=1':'EXISTS(SELECT 1 FROM beta_invitations WHERE code_hash=? AND email=? AND expires_at>? AND redeemed_at IS NULL AND revoked_at IS NULL)';
  await db.batch([
-  db.prepare("INSERT OR IGNORE INTO users(id,oidc_subject,email) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM users WHERE lower(email)=?) AND (SELECT COUNT(*) FROM beta_accounts)<?").bind(id,subject,email,email,BETA_MAX_ACCOUNTS),
+  db.prepare("INSERT OR IGNORE INTO users(id,oidc_subject,email) SELECT ?,?,? WHERE NOT EXISTS(SELECT 1 FROM users WHERE lower(email)=?) AND (SELECT COUNT(*) FROM beta_accounts)<? AND "+gate).bind(id,subject,email,email,BETA_MAX_ACCOUNTS,...(ownerAllowed?[]:[inviteHash,email,now])),
   db.prepare("INSERT INTO workspaces(id,name) SELECT ?,'My workspace' WHERE EXISTS(SELECT 1 FROM users WHERE id=?)").bind(wid,id),
   db.prepare("INSERT INTO memberships(workspace_id,user_id,role) SELECT ?,?,'owner' WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,id,wid),
   db.prepare("INSERT INTO workspace_entitlements(workspace_id,plan,state,project_limit,integration_limit,sync_daily_limit,retention_days) SELECT ?,'private_beta','active',3,0,0,30 WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,wid),
   db.prepare('INSERT INTO beta_accounts(user_id,workspace_id,accepted_terms) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)').bind(id,wid,BETA_TERMS,wid),
-  db.prepare("INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_type,resource_id) SELECT ?,?,?,'beta.created','workspace',? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,crypto.randomUUID(),id,wid,wid)
+  db.prepare("INSERT INTO audit_events(workspace_id,id,actor_id,action,resource_type,resource_id) SELECT ?,?,?,'beta.created','workspace',? WHERE EXISTS(SELECT 1 FROM workspaces WHERE id=?)").bind(wid,crypto.randomUUID(),id,wid,wid),
+  db.prepare('UPDATE beta_invitations SET redeemed_at=? WHERE code_hash=? AND email=? AND EXISTS(SELECT 1 FROM beta_accounts WHERE user_id=? AND workspace_id=?)').bind(now,inviteHash,email,id,wid)
  ]);
- return await lookup();
+ return await findBetaIdentity(db,email,subject);
 }
+const token43Hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
 async function confirmBetaCode(req,env,u){
  if(!originOK(req,u))return json({error:'Forbidden'},403);
  if(!await betaRate(req,env))return verifyPage('Too many requests. Please try again later.',429);
@@ -303,9 +325,9 @@ async function confirmBetaCode(req,env,u){
  // Count guesses atomically; the token cannot be used in another browser.
  const attempt=await db.prepare('UPDATE beta_email_challenges SET attempts=attempts+1 WHERE challenge_hash=? AND expires_at>? AND attempts<5 RETURNING attempts').bind(h,now).first();
  if(!attempt)return verifyPage('This code has expired or reached the attempt limit. Request a new one.',400);
- const claimed=await db.prepare('DELETE FROM beta_email_challenges WHERE challenge_hash=? AND code_hash=? AND expires_at>? RETURNING email').bind(h,await hash(challenge+':'+code),now).first();
+ const claimed=await db.prepare('DELETE FROM beta_email_challenges WHERE challenge_hash=? AND code_hash=? AND expires_at>? RETURNING email,invite_hash').bind(h,await hash(challenge+':'+code),now).first();
  if(!claimed)return verifyPage('Incorrect code. Please try again or request a new one.',400);
- const user=await betaIdentity(db,claimed.email);
+ const user=claimed.email===normalizeEmail(env.OWNER_EMAIL)?null:await betaIdentity(db,claimed.email,claimed.invite_hash);
  if(!user)return betaPage('Beta access','<h1>Beta access unavailable</h1><p>The beta may be full or this account may use another sign-in method. Please contact <a href="mailto:contact@projectzero.work">contact@projectzero.work</a>.</p>',409,{'set-cookie':betaCookie('',0)});
  const sessionToken=randomToken();
  await db.batch([
@@ -314,6 +336,35 @@ async function confirmBetaCode(req,env,u){
  ]);
  const headers=new Headers({location:'/','cache-control':'no-store','referrer-policy':'no-referrer'});headers.append('set-cookie',betaCookie('',0));headers.append('set-cookie',cookieValue('__Host-pz_session',sessionToken,43200));
  return new Response(null,{status:303,headers});
+}
+async function betaAdmin(req,u,env,user){
+ const db=env.COMMERCIAL_DB;
+ if(!await isBetaOwner(db,user,env))return json({error:'Not found'},404);
+ const now=nowSeconds();let issued='',message='';
+ if(req.method==='POST'){
+  if(!originOK(req,u))return json({error:'Forbidden'},403);
+  const form=await boundedForm(req,1024),action=form?.get('action');
+  if(action==='issue'){
+   const email=normalizeEmail(form.get('email'));
+   if(!email||email===normalizeEmail(env.OWNER_EMAIL))return json({error:'Enter a tester email address'},400);
+   if(await db.prepare('SELECT 1 FROM users WHERE lower(email)=?').bind(email).first())return betaPage('Beta invitations','<h1>Already registered</h1><p>This email already has an account. Ask the tester to sign in.</p><a href="/admin/beta">Back to invitations</a>',409);
+   const code=randomToken(),h=await hash(code),id=crypto.randomUUID();
+   // Atomically limit outstanding invites and supersede a previous unused invite for the same email.
+   const result=await db.batch([
+    db.prepare('UPDATE beta_invitations SET revoked_at=? WHERE email=? AND redeemed_at IS NULL AND revoked_at IS NULL').bind(now,email),
+    db.prepare('INSERT INTO beta_invitations(id,code_hash,email,created_at,expires_at) SELECT ?,?,?,?,? WHERE (SELECT COUNT(*) FROM beta_invitations WHERE expires_at>? AND redeemed_at IS NULL AND revoked_at IS NULL)+(SELECT COUNT(*) FROM beta_accounts)<? AND NOT EXISTS(SELECT 1 FROM users WHERE lower(email)=?)').bind(id,h,email,now,now+14*86400,now,BETA_MAX_ACCOUNTS,email)
+   ]);
+   if(result[1]?.meta?.changes!==1)return betaPage('Beta invitations','<h1>Invitation unavailable</h1><p>The beta is full or this address already has an account.</p><a href="/admin/beta">Back to invitations</a>',409);
+   issued='<div class="notice"><h2>New invitation for '+escapeHTML(email)+'</h2><p>Copy this code now: it will not be displayed again. Send it directly to this approved tester, along with <a href="/auth/login">the Google redemption page</a> or <a href="/auth/signup">email redemption</a>. It expires in 14 days and can only be redeemed once for this email.</p><label>Invitation code <input type="text" readonly value="'+escapeHTML(code)+'"></label></div>';
+  }else if(action==='revoke'&&validId(form.get('id'))){
+   await db.prepare('UPDATE beta_invitations SET revoked_at=? WHERE id=? AND redeemed_at IS NULL AND revoked_at IS NULL').bind(now,form.get('id')).run();message='<p role="status">Unused invitation revoked.</p>';
+  }else return json({error:'Invalid invitation action'},400);
+ }else if(req.method!=='GET')return json({error:'Method not allowed'},405);
+ const count=await db.prepare('SELECT COUNT(*) n FROM beta_accounts').bind().first();
+ const invitations=await rows(db.prepare('SELECT id,email,created_at,expires_at,redeemed_at,revoked_at FROM beta_invitations ORDER BY created_at DESC LIMIT 200').bind());
+ const state=i=>i.redeemed_at?'Redeemed':i.revoked_at?'Revoked':i.expires_at<=now?'Expired':'Pending';
+ const list=invitations.map(i=>'<li><strong>'+escapeHTML(i.email)+'</strong> · '+state(i)+' · expires '+new Date(i.expires_at*1000).toISOString().slice(0,10)+(state(i)==='Pending'?'<form method="post" action="/admin/beta"><input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="'+escapeHTML(i.id)+'"><button class="button" type="submit">Revoke invite</button></form>':'')+'</li>').join('');
+ return betaPage('Beta invitations','<p><a href="/">← My account</a></p><h1>Beta invitations</h1><p>'+count.n+' of '+BETA_MAX_ACCOUNTS+' beta accounts registered. Access is free; no payment information.</p>'+message+issued+'<h2>Generate a free invitation code</h2><form method="post" action="/admin/beta"><input type="hidden" name="action" value="issue"><label>Approved tester email <input type="email" name="email" maxlength="254" required></label><button class="button" type="submit">Generate invitation code</button></form><p class="muted">Codes expire in 14 days. Reissuing replaces an unused invitation; codes do not expire registered accounts.</p><h2>Recent invitations</h2><ul>'+list+'</ul>');
 }
 async function betaWorkspace(db,user){
  return db.prepare('SELECT b.workspace_id,u.email,w.name,b.accepted_terms,b.accepted_at FROM beta_accounts b JOIN users u ON u.id=b.user_id JOIN workspaces w ON w.id=b.workspace_id JOIN memberships m ON m.workspace_id=w.id AND m.user_id=u.id WHERE b.user_id=? AND u.disabled_at IS NULL AND w.deleted_at IS NULL AND m.role=\'owner\'').bind(user.id).first();
@@ -383,15 +434,17 @@ export default {async scheduled(event,env){if(betaMode(env)){const now=nowSecond
   if(['/privacy','/privacy/','/terms','/terms/','/sitemap.xml'].includes(u.pathname))return Response.redirect(PUBLIC_ORIGIN+u.pathname.replace(/\/$/,'') ,301);
   if(u.pathname==='/')return await accountHome(req,env);
  }
- if(u.pathname==='/auth/signup')return req.method==='GET'&&googleBetaMode(env)&&googleReady(env)?googleBetaPage():emailReady(env)&&req.method==='GET'?signupPage(env):json({error:'Public signup is disabled'},503);
+ if(u.pathname==='/auth/signup')return emailReady(env)&&req.method==='GET'?signupPage(env):json({error:'Public signup is disabled'},503);
  if(u.pathname==='/auth/email')return emailReady(env)&&req.method==='POST'?await requestBetaCode(req,env,u):json({error:'Sign-in unavailable'},503);
  if(u.pathname==='/auth/verify')return emailReady(env)?(req.method==='GET'?verifyPage():req.method==='POST'?await confirmBetaCode(req,env,u):json({error:'Method not allowed'},405)):json({error:'Sign-in unavailable'},503);
  if(u.pathname==='/auth/login'){
   if(googleBetaMode(env)&&googleReady(env)){
    if(req.method==='GET')return googleBetaPage();
    if(req.method!=='POST'||!originOK(req,u))return json({error:'Forbidden'},403);
-   const form=await boundedForm(req,256);if(form?.get('accept')!=='yes')return googleBetaPage('Accept the terms to continue.',400);
-   return await login(req,env);
+   const form=await boundedForm(req,512),invite=form?.get('invite')?.trim()||'';
+   if(form?.get('accept')!=='yes')return googleBetaPage('Accept the terms to continue.',400);
+   if(invite&&!token43(invite))return googleBetaPage('Enter the full invitation code.',400);
+   return await login(req,env,invite?await hash(invite):null);
   }
   return req.method==='GET'?await login(req,env):json({error:'Method not allowed'},405);
  }
@@ -403,6 +456,7 @@ export default {async scheduled(event,env){if(betaMode(env)){const now=nowSecond
  if(u.pathname==='/api/v1/assistant/project')return betaMode(env)?json({error:'Assistant connections are not available during beta'},403):await assistantRead(req,db);
  if(!['GET','POST','DELETE'].includes(req.method))return json({error:'Method not allowed'},405);
  const user=await session(req,db);if(!user)return json({error:'Authentication required'},401);
+ if(u.pathname==='/admin/beta')return betaMode(env)?await betaAdmin(req,u,env,user):json({error:'Not found'},404);
  if(betaMode(env)&&u.pathname==='/account/export'&&req.method==='GET')return await betaExport(db,user);
  if(betaMode(env)&&u.pathname==='/account/delete')return await betaDelete(req,u,db,user);
  if(req.method==='GET'&&u.pathname==='/assets/customer-setup-v1.js')return setupResponse(SETUP_JS,'application/javascript; charset=utf-8');
@@ -426,3 +480,4 @@ export default {async scheduled(event,env){if(betaMode(env)){const now=nowSecond
  return json({workspace:{id:member.id,name:member.name,role:member.role},projects:projects.n,tasks,integrations,financials:null,financialsStatus:'Not connected'});
  }catch{return json({error:'Service unavailable'},503)}
 }};
+

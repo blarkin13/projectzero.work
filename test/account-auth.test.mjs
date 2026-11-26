@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
 import worker from '../workers/projectzero-commercial/worker.mjs';
 const HOST='https://account.projectzero.work';
 const ID='synthetic-client.apps.googleusercontent.com';
@@ -8,7 +9,7 @@ const COOKIE='__Host-pz_oauth';
 const request=(path,opts={})=>new Request(HOST+path,{...opts,headers:{'CF-Connecting-IP':'192.0.2.1',...opts.headers}});
 const bytes=n=>crypto.getRandomValues(new Uint8Array(n));
 const b64=b=>Buffer.from(b).toString('base64url');
-function fixture(beta=false){
+function fixture(){
  const sql=new DatabaseSync(':memory:');
  sql.exec(`
  CREATE TABLE oauth_states(state_hash TEXT PRIMARY KEY,verifier_ciphertext TEXT NOT NULL,nonce_hash TEXT NOT NULL,expires_at INTEGER NOT NULL,used_at INTEGER);
@@ -20,18 +21,12 @@ function fixture(beta=false){
  INSERT INTO workspaces VALUES('w1','Authorized workspace',NULL),('w2','Unrelated workspace',NULL);
  INSERT INTO memberships VALUES('w1','u1','owner'),('w2','u2','owner');
  `);
- if(beta){sql.exec(`DELETE FROM memberships; DELETE FROM workspaces; DELETE FROM users;
- CREATE TABLE beta_accounts(user_id TEXT PRIMARY KEY,workspace_id TEXT UNIQUE,accepted_terms TEXT,accepted_at TEXT DEFAULT CURRENT_TIMESTAMP);
- CREATE TABLE workspace_entitlements(workspace_id TEXT PRIMARY KEY,plan TEXT,state TEXT,project_limit INTEGER,integration_limit INTEGER,sync_daily_limit INTEGER,retention_days INTEGER);
- CREATE TABLE audit_events(workspace_id TEXT,id TEXT,actor_id TEXT,action TEXT,resource_type TEXT,resource_id TEXT);
- `)}
- const db={prepare(s){const stmt=sql.prepare(s);return {bind(...args){return {first:async()=>stmt.get(...args)||null,all:async()=>({results:stmt.all(...args)}),run:async()=>stmt.run(...args)}}}},async batch(items){sql.exec('BEGIN');try{const results=[];for(const item of items)results.push(await item.run());sql.exec('COMMIT');return results}catch(e){sql.exec('ROLLBACK');throw e}}};
+ const db={prepare(s){const stmt=sql.prepare(s);return {bind(...args){return {first:async()=>stmt.get(...args)||null,all:async()=>({results:stmt.all(...args)}),run:async()=>stmt.run(...args)}}}}};
  const env={COMMERCIAL_DB:db,CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'invite_only',GOOGLE_CLIENT_ID:ID,GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),AUTH_RATE_LIMIT:{limit:async()=>({success:true})}};
- if(beta){Object.assign(env,{CUSTOMER_ACCESS:'beta',GOOGLE_LOGIN_MODE:'beta_invite',OWNER_EMAIL:'owner@gmail.com',PZW_GOOGLE_CLIENT_ID:ID,PZW_GOOGLE_CLIENT_SECRET:'synthetic',BETA_AUTH_LIMIT:env.AUTH_RATE_LIMIT,EMAIL_LOGIN_MODE:'disabled'});delete env.AUTH_RATE_LIMIT;delete env.GOOGLE_CLIENT_ID;delete env.GOOGLE_CLIENT_SECRET;}
  return {sql,env};
 }
-async function start(env){
- const res=await worker.fetch(request('/auth/login',env.GOOGLE_LOGIN_MODE==='beta_invite'?{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:'accept=yes'}:{}),env);
+async function start(env,invite=''){
+ const res=await worker.fetch(request('/auth/login',env.GOOGLE_LOGIN_MODE==='beta_invite'?{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({accept:'yes',invite})}:{}),env);
  assert.equal(res.status,302);
  const u=new URL(res.headers.get('location'));const state=u.searchParams.get('state');
  assert.equal(u.origin,'https://accounts.google.com');
@@ -137,28 +132,48 @@ test('logout requires same-origin POST',async()=>{
  assert.equal((await worker.fetch(request('/auth/logout',{method:'POST',headers:{origin:'https://evil.example'}}),env)).status,403);
 });
 
-test('Google beta renders only Google sign in, requires consent and origin, and turns off email auth',async()=>{
- const {sql,env}=fixture(true);
- for(const p of ['/','/auth/signup','/auth/login']){const r=await worker.fetch(request(p),env);assert.equal(r.status,200);const h=await r.text();assert.match(h,/Sign in with Google/);assert.doesNotMatch(h,/turnstile|Email my sign-in code/);if(p!=='/'){assert.equal(r.headers.get('referrer-policy'),'same-origin');assert.match(r.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com/);}}
- assert.equal((await worker.fetch(request('/auth/email',{method:'POST'}),env)).status,503);
- assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:'https://evil.example','content-type':'application/x-www-form-urlencoded'},body:'accept=yes'}),env)).status,403);
- assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:'accept=no'}),env)).status,400);
- assert.equal(sql.prepare('SELECT COUNT(*) n FROM oauth_states').get().n,0);
+
+test('only the configured Google owner can sign into beta and manage personal invites',async()=>{
+ const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON');
+ for(const f of ['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql','schema/migrations/002-free-beta.sql','schema/migrations/003-beta-invitations.sql'])sql.exec(readFileSync(f,'utf8'));
+ const prepare=s=>({bind(...a){return {first:async()=>sql.prepare(s).get(...a)||null,all:async()=>({results:sql.prepare(s).all(...a)}),runSync:()=>({meta:{changes:Number(sql.prepare(s).run(...a).changes)}}),async run(){return this.runSync()}}}});
+ const env={COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}},CUSTOMER_ACCESS:'beta',EMAIL_LOGIN_MODE:'invite_only',GOOGLE_LOGIN_MODE:'beta_invite',OWNER_EMAIL:'owner@gmail.com',PZW_GOOGLE_CLIENT_ID:ID,PZW_GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),BETA_AUTH_LIMIT:{limit:async()=>({success:true})},BETA_EMAIL:{send:async()=>{}},TURNSTILE_SITE_KEY:'test-site-key123',TURNSTILE_SECRET:'synthetic-secret'};
+ const attempt=async (changes,invite='')=>{const flow=await start(env,invite),mock=await provider(flow.nonce,flow.challenge,changes);try{return await callback(flow,env)}finally{mock.restore()}};
+ try{
+  const home=await worker.fetch(request('/'),env);assert.match(await home.text(),/Sign in with Google/);const loginPage=await worker.fetch(request('/auth/login'),env);assert.match(await loginPage.text(),/I agree to the/);assert.equal(loginPage.headers.get('referrer-policy'),'same-origin');assert.match(loginPage.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com/);assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:'https://evil.invalid','content-type':'application/x-www-form-urlencoded'},body:'accept=yes'}),env)).status,403);
+  assert.equal((await attempt({email:'other@example.invalid'})).status,403);
+  assert.equal((await attempt({email:'unapproved@gmail.com'})).status,403);
+  const owner=env.OWNER_EMAIL;env.OWNER_EMAIL='owner@example.com';assert.equal((await attempt({email:'owner@example.com'})).status,403);env.OWNER_EMAIL=owner;
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);
+  assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:'accept=no'}),env)).status,400);
+  const result=await attempt({email:'owner@gmail.com'});assert.equal(result.status,303,await result.clone().text());
+  const cookie=result.headers.getSetCookie().find(c=>c.startsWith('__Host-pz_session=')).split(';')[0];
+  assert.equal(sql.prepare('SELECT oidc_subject FROM users').get().oidc_subject,'google:google-subject');
+  assert.equal((await worker.fetch(request('/api/v1/assistant/project',{headers:{cookie}}),env)).status,403);
+  assert.equal((await attempt({email:'owner@gmail.com',sub:'different-google-subject'})).status,403);
+  const get=()=>worker.fetch(request('/admin/beta',{headers:{cookie}}),env);
+  const post=(form,origin=HOST)=>worker.fetch(request('/admin/beta',{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form)}),env);
+  assert.match(await (await get()).text(),/Generate a free invitation code/);
+  assert.equal((await post({action:'issue',email:'tester@gmail.com'},'https://evil.invalid')).status,403);
+  assert.equal((await post({action:'issue',email:'owner@gmail.com'})).status,400);
+  const issued=await post({action:'issue',email:'tester@gmail.com'});assert.equal(issued.status,200);
+  const markup=await issued.text(),code=markup.match(/readonly value="([A-Za-z0-9_-]{43})"/)?.[1];assert.ok(code);
+  assert(!JSON.stringify(sql.prepare('SELECT * FROM beta_invitations').all()).includes(code));
+  assert(!(await (await get()).text()).includes(code));
+  assert.equal((await attempt({email:'wrong@gmail.com',sub:'test-tester'},code)).status,403);
+  assert.equal((await attempt({email:'tester@gmail.com',sub:'test-tester'},code)).status,303);
+  assert.equal((await attempt({email:'tester@gmail.com',sub:'test-tester'})).status,303);
+  assert.equal((await attempt({email:'unapproved@gmail.com',sub:'nope'})).status,403);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE redeemed_at IS NOT NULL').get().n,1);
+  assert.equal((await post({action:'issue',email:'tester@gmail.com'})).status,409);
+  const first=await post({action:'issue',email:'tester2@gmail.com'});assert.equal(first.status,200);
+  const second=await post({action:'issue',email:'tester2@gmail.com'});assert.equal(second.status,200);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NOT NULL').get().n,1);
+  const id=sql.prepare('SELECT id FROM beta_invitations WHERE revoked_at IS NULL AND redeemed_at IS NULL').get().id;
+  assert.equal((await post({action:'revoke',id})).status,200);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NULL AND redeemed_at IS NULL').get().n,0);
+  assert.match(await (await worker.fetch(request('/',{headers:{cookie}}),env)).text(),/Manage beta invitations/);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,2);
+  assert.deepEqual(sql.prepare('PRAGMA foreign_key_check').all(),[]);
+ }finally{sql.close()}
 });
-test('approved Google owner creates isolated beta workspace; repeat sign-in reuses it and assistant access remains off',async()=>{
- const {sql,env}=fixture(true);
- for(let i=0;i<2;i++){const flow=await start(env);const mock=await provider(flow.nonce,flow.challenge,{email:'owner@gmail.com',sub:'approved-google'});try{
- const r=await callback(flow,env);assert.equal(r.status,303);const token=r.headers.getSetCookie().find(v=>v.startsWith('__Host-pz_session=')).split(';')[0];
- const home=await worker.fetch(request('/',{headers:{cookie:token}}),env);assert.match(await home.text(),/Free beta/);
- assert.equal((await worker.fetch(request('/api/v1/assistant/project',{headers:{cookie:token}}),env)).status,403);
- assert.equal((await worker.fetch(request('/api/v1/workspaces/w2/overview',{headers:{cookie:token}}),env)).status,404);
- }finally{mock.restore()}}
- assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,1);assert.equal(sql.prepare('SELECT oidc_subject FROM users').get().oidc_subject,'google:approved-google');
- assert.deepEqual({...sql.prepare('SELECT plan,project_limit,integration_limit FROM workspace_entitlements').get()},{plan:'private_beta',project_limit:3,integration_limit:0});
- assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_accounts').get().n,1);
-});
-for(const [email,owner] of [['unknown@gmail.com','owner@gmail.com'],['owner@example.com','owner@example.com']]){
- test('Google beta rejects unapproved or non-authoritative identity '+email,async()=>{
- const {sql,env}=fixture(true);env.OWNER_EMAIL=owner;const flow=await start(env),mock=await provider(flow.nonce,flow.challenge,{email,sub:'unapproved'});try{const r=await callback(flow,env);assert.equal(r.status,403);assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);assert.equal(sql.prepare('SELECT COUNT(*) n FROM sessions').get().n,0)}finally{mock.restore()}
- });
-}
