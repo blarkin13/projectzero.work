@@ -22,11 +22,11 @@ function fixture(){
  INSERT INTO memberships VALUES('w1','u1','owner'),('w2','u2','owner');
  `);
  const db={prepare(s){const stmt=sql.prepare(s);return {bind(...args){return {first:async()=>stmt.get(...args)||null,all:async()=>({results:stmt.all(...args)}),run:async()=>stmt.run(...args)}}}}};
- const env={COMMERCIAL_DB:db,CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'invite_only',GOOGLE_CLIENT_ID:ID,GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),AUTH_RATE_LIMIT:{limit:async()=>({success:true})}};
+ const env={COMMERCIAL_DB:db,CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'authorized',GOOGLE_CLIENT_ID:ID,GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),AUTH_RATE_LIMIT:{limit:async()=>({success:true})}};
  return {sql,env};
 }
-async function start(env,invite=''){
- const res=await worker.fetch(request('/auth/login',env.GOOGLE_LOGIN_MODE==='beta_invite'?{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({accept:'yes',invite})}:{}),env);
+async function start(env){
+ const res=await worker.fetch(request('/auth/login'),env);
  assert.equal(res.status,302);
  const u=new URL(res.headers.get('location'));const state=u.searchParams.get('state');
  assert.equal(u.origin,'https://accounts.google.com');
@@ -71,7 +71,7 @@ test('closed account homepage and canonical public legal redirects; all customer
  for(const path of ['/privacy','/terms','/privacy/','/terms/']){
   const r=await worker.fetch(request(path),env);assert.equal(r.status,301);assert.equal(r.headers.get('location'),'https://www.projectzero.work'+path.replace(/\/$/,''));assert.equal(r.headers.get('set-cookie'),null);
  }
- for(const path of ['/auth/login','/auth/google/callback','/auth/signup','/api/v1/workspaces'])assert.equal((await worker.fetch(request(path),env)).status,503);
+ for(const path of ['/auth/login','/auth/google/callback','/api/v1/workspaces'])assert.equal((await worker.fetch(request(path),env)).status,503);
  assert.equal((await worker.fetch(request('/internal/readiness'),env)).status,404);
  assert.equal((await worker.fetch(new Request('https://unexpected.example/'),env)).status,404);
 });
@@ -133,47 +133,26 @@ test('logout requires same-origin POST',async()=>{
 });
 
 
-test('only the configured Google owner can sign into beta and manage personal invites',async()=>{
+test('owner signs in directly, without beta tables, and no other identity can self-register',async()=>{
  const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON');
- for(const f of ['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql','schema/migrations/002-free-beta.sql','schema/migrations/003-beta-invitations.sql'])sql.exec(readFileSync(f,'utf8'));
+ for(const f of ['schema/commercial.sql','schema/migrations/001-commercial-onboarding.sql'])sql.exec(readFileSync(f,'utf8'));
  const prepare=s=>({bind(...a){return {first:async()=>sql.prepare(s).get(...a)||null,all:async()=>({results:sql.prepare(s).all(...a)}),runSync:()=>({meta:{changes:Number(sql.prepare(s).run(...a).changes)}}),async run(){return this.runSync()}}}});
- const env={COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}},CUSTOMER_ACCESS:'beta',EMAIL_LOGIN_MODE:'invite_only',GOOGLE_LOGIN_MODE:'beta_invite',OWNER_EMAIL:'owner@gmail.com',PZW_GOOGLE_CLIENT_ID:ID,PZW_GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),BETA_AUTH_LIMIT:{limit:async()=>({success:true})},BETA_EMAIL:{send:async()=>{}},TURNSTILE_SITE_KEY:'test-site-key123',TURNSTILE_SECRET:'synthetic-secret'};
- const attempt=async (changes,invite='')=>{const flow=await start(env,invite),mock=await provider(flow.nonce,flow.challenge,changes);try{return await callback(flow,env)}finally{mock.restore()}};
+ const env={COMMERCIAL_DB:{prepare,async batch(stmts){sql.exec('BEGIN IMMEDIATE');try{const r=stmts.map(s=>s.runSync());sql.exec('COMMIT');return r}catch(e){sql.exec('ROLLBACK');throw e}}},CUSTOMER_ACCESS:'enabled',GOOGLE_LOGIN_MODE:'authorized',OWNER_EMAIL:'owner@gmail.com',PZW_GOOGLE_CLIENT_ID:ID,PZW_GOOGLE_CLIENT_SECRET:'synthetic-not-a-secret',GOOGLE_OAUTH_STATE_KEY:b64(bytes(32)),AUTH_RATE_LIMIT:{limit:async()=>({success:true})}};
+ const attempt=async changes=>{const flow=await start(env),mock=await provider(flow.nonce,flow.challenge,changes);try{return await callback(flow,env)}finally{mock.restore()}};
  try{
-  const home=await worker.fetch(request('/'),env);assert.match(await home.text(),/Sign in with Google/);const loginPage=await worker.fetch(request('/auth/login'),env);assert.match(await loginPage.text(),/I agree to the/);assert.equal(loginPage.headers.get('referrer-policy'),'same-origin');assert.match(loginPage.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com/);assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:'https://evil.invalid','content-type':'application/x-www-form-urlencoded'},body:'accept=yes'}),env)).status,403);
-  assert.equal((await attempt({email:'other@example.invalid'})).status,403);
-  assert.equal((await attempt({email:'unapproved@gmail.com'})).status,403);
-  const owner=env.OWNER_EMAIL;env.OWNER_EMAIL='owner@example.com';assert.equal((await attempt({email:'owner@example.com'})).status,403);env.OWNER_EMAIL=owner;
+  const home=await (await worker.fetch(request('/'),env)).text();assert.match(home,/Sign in with Google/);assert.doesNotMatch(home,/beta|invitation|Sign in with email/i);
+  assert.equal((await attempt({email:'unknown@gmail.com'})).status,403);
   assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,0);
-  assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:'accept=no'}),env)).status,400);
   const result=await attempt({email:'owner@gmail.com'});assert.equal(result.status,303,await result.clone().text());
   const cookie=result.headers.getSetCookie().find(c=>c.startsWith('__Host-pz_session=')).split(';')[0];
   assert.equal(sql.prepare('SELECT oidc_subject FROM users').get().oidc_subject,'google:google-subject');
-  assert.equal((await worker.fetch(request('/api/v1/assistant/project',{headers:{cookie}}),env)).status,403);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM workspaces').get().n,1);
+  assert.match(await (await worker.fetch(request('/',{headers:{cookie}}),env)).text(),/You are signed in/);
   assert.equal((await attempt({email:'owner@gmail.com',sub:'different-google-subject'})).status,403);
-  const get=()=>worker.fetch(request('/admin/beta',{headers:{cookie}}),env);
-  const post=(form,origin=HOST)=>worker.fetch(request('/admin/beta',{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(form)}),env);
-  assert.match(await (await get()).text(),/Generate a free invitation code/);
-  assert.equal((await post({action:'issue',email:'tester@gmail.com'},'https://evil.invalid')).status,403);
-  assert.equal((await post({action:'issue',email:'owner@gmail.com'})).status,400);
-  const issued=await post({action:'issue',email:'tester@gmail.com'});assert.equal(issued.status,200);
-  const markup=await issued.text(),code=markup.match(/readonly value="([A-Za-z0-9_-]{43})"/)?.[1];assert.ok(code);
-  assert(!JSON.stringify(sql.prepare('SELECT * FROM beta_invitations').all()).includes(code));
-  assert(!(await (await get()).text()).includes(code));
-  assert.equal((await attempt({email:'wrong@gmail.com',sub:'test-tester'},code)).status,403);
-  assert.equal((await attempt({email:'tester@gmail.com',sub:'test-tester'},code)).status,303);
-  assert.equal((await attempt({email:'tester@gmail.com',sub:'test-tester'})).status,303);
-  assert.equal((await attempt({email:'unapproved@gmail.com',sub:'nope'})).status,403);
-  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE redeemed_at IS NOT NULL').get().n,1);
-  assert.equal((await post({action:'issue',email:'tester@gmail.com'})).status,409);
-  const first=await post({action:'issue',email:'tester2@gmail.com'});assert.equal(first.status,200);
-  const second=await post({action:'issue',email:'tester2@gmail.com'});assert.equal(second.status,200);
-  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NOT NULL').get().n,1);
-  const id=sql.prepare('SELECT id FROM beta_invitations WHERE revoked_at IS NULL AND redeemed_at IS NULL').get().id;
-  assert.equal((await post({action:'revoke',id})).status,200);
-  assert.equal(sql.prepare('SELECT COUNT(*) n FROM beta_invitations WHERE revoked_at IS NULL AND redeemed_at IS NULL').get().n,0);
-  assert.match(await (await worker.fetch(request('/',{headers:{cookie}}),env)).text(),/Manage beta invitations/);
-  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,2);
+  assert.equal((await attempt({email:'owner@gmail.com'})).status,303);
+  assert.equal(sql.prepare('SELECT COUNT(*) n FROM users').get().n,1);
+  assert.equal((await worker.fetch(request('/account/export',{headers:{cookie}}),env)).status,200);
+  for(const path of ['/auth/signup','/auth/email','/auth/verify','/admin/beta'])assert.equal((await worker.fetch(request(path,{headers:{cookie}}),env)).status,404);
   assert.deepEqual(sql.prepare('PRAGMA foreign_key_check').all(),[]);
  }finally{sql.close()}
 });
