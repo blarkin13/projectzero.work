@@ -177,3 +177,17 @@ test('only the configured Google owner can sign into beta and manage personal in
   assert.deepEqual(sql.prepare('PRAGMA foreign_key_check').all(),[]);
  }finally{sql.close()}
 });
+
+test('Google token endpoint failures return only a fixed support reference and never provider details',async()=>{
+ for(const [error,reference] of [['invalid_client','PZ-G2C'],['invalid_grant','PZ-G2R'],['temporarily_unavailable','PZ-G2']]){
+  const {sql,env}=fixture(),flow=await start(env),original=globalThis.fetch;
+  globalThis.fetch=async()=>Response.json({error,error_description:'private provider details',access_token:'never-expose-token'},{status:400});
+  try{
+   const result=await callback(flow,env),html=await result.text();
+   assert.equal(result.status,401);assert.ok(html.includes('Support reference: '+reference));
+   assert(!html.includes('private provider details'));assert(!html.includes('never-expose-token'));
+   assert.equal(sql.prepare('SELECT COUNT(*) n FROM sessions').get().n,0);
+   assert.equal((await callback(flow,env)).status,400);
+  }finally{globalThis.fetch=original;sql.close()}
+ }
+});
