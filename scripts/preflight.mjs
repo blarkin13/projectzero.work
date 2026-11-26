@@ -33,14 +33,14 @@ export function verifyRelease({name,entry,observed,template,candidate,now=Date.n
     const bindings=entry.metadata.bindings, find=n=>bindings.find(b=>b.name===n);
     const access=find('CUSTOMER_ACCESS')?.text;
     if (access!=='disabled') {
-      const betaNames=['COMMERCIAL_DB','CUSTOMER_ACCESS','EMAIL_LOGIN_MODE','TURNSTILE_SITE_KEY','BETA_EMAIL','BETA_AUTH_LIMIT'];
+      const betaNames=['COMMERCIAL_DB','CUSTOMER_ACCESS','EMAIL_LOGIN_MODE','TURNSTILE_SITE_KEY','BETA_EMAIL','BETA_AUTH_LIMIT','OWNER_EMAIL','GOOGLE_LOGIN_MODE'];
       const email=find('BETA_EMAIL'), rate=find('BETA_AUTH_LIMIT');
       const beta=access==='beta'&&bindings.length===betaNames.length&&betaNames.every(n=>!!find(n))&&
-        find('COMMERCIAL_DB').type==='d1'&&find('EMAIL_LOGIN_MODE').text==='open_beta'&&
+        find('COMMERCIAL_DB').type==='d1'&&find('EMAIL_LOGIN_MODE').text==='invite_only'&&find('GOOGLE_LOGIN_MODE').text==='owner_beta'&&find('OWNER_EMAIL').type==='plain_text'&&/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(find('OWNER_EMAIL').text||'')&&
         /^[A-Za-z0-9_-]{10,100}$/.test(find('TURNSTILE_SITE_KEY').text||'')&&
         email.type==='send_email'&&JSON.stringify(email.allowed_sender_addresses)===JSON.stringify(['signin@auth.projectzero.work'])&&
         rate.type==='ratelimit'&&rate.simple?.limit===12&&rate.simple?.period===60&&
-        entry.required_secret_names.length===1&&entry.required_secret_names[0]==='TURNSTILE_SECRET';
+        JSON.stringify(sorted(entry.required_secret_names))===JSON.stringify(sorted(['TURNSTILE_SECRET','PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY']));
       if (!beta) throw Error('Commercial customer access must remain disabled except the explicitly isolated free beta configuration');
     }
   }
@@ -57,3 +57,4 @@ if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
   const candidate=readFileSync('dist/'+name+'/worker.mjs','utf8');
   console.log(JSON.stringify(verifyRelease({name,entry:manifest.workers[name],observed:observation.workers[name],template,candidate}),null,2));
 }
+
