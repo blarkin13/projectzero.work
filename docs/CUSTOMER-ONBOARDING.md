@@ -4,7 +4,7 @@
 
 The public landing page and demo are separate from the protected owner workspace. The demo is fictional, memory-only, and has no network connection to AI services or customer accounts. It generates deterministic, copy-ready example instructions, not AI output.
 
-The commercial Worker is a separate tenant-scoped service, with only its dedicated commercial D1 binding. The separate free beta release is owner-authorized; see FREE-BETA.md for the isolated email-verification configuration and launch checks. CUSTOMER_ACCESS=beta never enables paid service; retain workers.dev and previews disabled. No billing, AI service connection, AI scheduler or external service purchase is enabled.
+The commercial Worker is a separate tenant-scoped service with only its dedicated commercial D1 binding. Direct Google sign-in supports the configured owner and existing authorized identities; public registration and paid services remain closed. Keep workers.dev and previews disabled. See GOOGLE-ACCOUNT-SETUP.md.
 
 ## Customer setup
 
