@@ -33,15 +33,13 @@ export function verifyRelease({name,entry,observed,template,candidate,now=Date.n
     const bindings=entry.metadata.bindings, find=n=>bindings.find(b=>b.name===n);
     const access=find('CUSTOMER_ACCESS')?.text;
     if (access!=='disabled') {
-      const betaNames=['COMMERCIAL_DB','CUSTOMER_ACCESS','EMAIL_LOGIN_MODE','TURNSTILE_SITE_KEY','BETA_EMAIL','BETA_AUTH_LIMIT','OWNER_EMAIL','GOOGLE_LOGIN_MODE'];
-      const email=find('BETA_EMAIL'), rate=find('BETA_AUTH_LIMIT');
-      const beta=access==='beta'&&bindings.length===betaNames.length&&betaNames.every(n=>!!find(n))&&
-        find('COMMERCIAL_DB').type==='d1'&&find('EMAIL_LOGIN_MODE').text==='invite_only'&&find('GOOGLE_LOGIN_MODE').text==='beta_invite'&&find('OWNER_EMAIL').type==='plain_text'&&/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(find('OWNER_EMAIL').text||'')&&
-        /^[A-Za-z0-9_-]{10,100}$/.test(find('TURNSTILE_SITE_KEY').text||'')&&
-        email.type==='send_email'&&JSON.stringify(email.allowed_sender_addresses)===JSON.stringify(['signin@auth.projectzero.work'])&&
+      const names=['COMMERCIAL_DB','CUSTOMER_ACCESS','OWNER_EMAIL','GOOGLE_LOGIN_MODE','AUTH_RATE_LIMIT'];
+      const rate=find('AUTH_RATE_LIMIT');
+      const authorized=access==='enabled'&&bindings.length===names.length&&names.every(n=>!!find(n))&&
+        find('COMMERCIAL_DB').type==='d1'&&find('GOOGLE_LOGIN_MODE').text==='authorized'&&find('OWNER_EMAIL').type==='plain_text'&&/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(find('OWNER_EMAIL').text||'')&&
         rate.type==='ratelimit'&&rate.simple?.limit===12&&rate.simple?.period===60&&
-        JSON.stringify(sorted(entry.required_secret_names))===JSON.stringify(sorted(['TURNSTILE_SECRET','PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY']));
-      if (!beta) throw Error('Commercial customer access must remain disabled except the explicitly isolated free beta configuration');
+        JSON.stringify(sorted(entry.required_secret_names))===JSON.stringify(sorted(['PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY']));
+      if (!authorized) throw Error('Commercial customer access must remain disabled except the explicitly isolated authorized Google configuration');
     }
   }
   return {worker:name,previous_version:observed.versions[0].version_id,previous_deployment:observed.deployment_id,source_sha256:sha(candidate),configuration_sha256:configDigest(entry),change:sha(candidate)===entry.source_sha256?'no-op':'source change',status:'preflight passed; no deployment performed'};
