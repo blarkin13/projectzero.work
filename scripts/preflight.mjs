@@ -29,21 +29,7 @@ export function verifyRelease({name,entry,observed,template,candidate,now=Date.n
   }
   if (/__PZ_CONFIG_\d{3}__/.test(restored) || restored!==candidate) throw Error('Candidate does not match reviewed source and private configuration');
   if (sha(template)===entry.template_sha256 && sha(candidate)!==entry.source_sha256) throw Error('Unchanged baseline must reproduce deployed source exactly');
-  if (name==='projectzero-commercial') {
-    const bindings=entry.metadata.bindings, find=n=>bindings.find(b=>b.name===n);
-    const access=find('CUSTOMER_ACCESS')?.text;
-    if (access!=='disabled') {
-      const betaNames=['COMMERCIAL_DB','CUSTOMER_ACCESS','EMAIL_LOGIN_MODE','TURNSTILE_SITE_KEY','BETA_EMAIL','BETA_AUTH_LIMIT','OWNER_EMAIL','GOOGLE_LOGIN_MODE'];
-      const email=find('BETA_EMAIL'), rate=find('BETA_AUTH_LIMIT');
-      const beta=access==='beta'&&bindings.length===betaNames.length&&betaNames.every(n=>!!find(n))&&
-        find('COMMERCIAL_DB').type==='d1'&&find('EMAIL_LOGIN_MODE').text==='invite_only'&&find('GOOGLE_LOGIN_MODE').text==='beta_invite'&&find('OWNER_EMAIL').type==='plain_text'&&/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(find('OWNER_EMAIL').text||'')&&
-        /^[A-Za-z0-9_-]{10,100}$/.test(find('TURNSTILE_SITE_KEY').text||'')&&
-        email.type==='send_email'&&JSON.stringify(email.allowed_sender_addresses)===JSON.stringify(['signin@auth.projectzero.work'])&&
-        rate.type==='ratelimit'&&rate.simple?.limit===12&&rate.simple?.period===60&&
-        JSON.stringify(sorted(entry.required_secret_names))===JSON.stringify(sorted(['TURNSTILE_SECRET','PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY']));
-      if (!beta) throw Error('Commercial customer access must remain disabled except the explicitly isolated free beta configuration');
-    }
-  }
+  if(name==='projectzero-commercial'){const b=entry.metadata.bindings,find=n=>b.find(x=>x.name===n);if(find('CUSTOMER_ACCESS')?.text!=='disabled'&&!(find('CUSTOMER_ACCESS')?.text==='enabled'&&find('GOOGLE_LOGIN_MODE')?.text==='owner_only'&&/^[^@\\s]+@gmail\\.com$/i.test(find('OWNER_EMAIL')?.text||'')&&['COMMERCIAL_DB','AUTH_RATE_LIMIT','PZW_GOOGLE_CLIENT_ID','PZW_GOOGLE_CLIENT_SECRET','GOOGLE_OAUTH_STATE_KEY'].every(n=>find(n))))throw Error('Only configured owner access is allowed');}
   return {worker:name,previous_version:observed.versions[0].version_id,previous_deployment:observed.deployment_id,source_sha256:sha(candidate),configuration_sha256:configDigest(entry),change:sha(candidate)===entry.source_sha256?'no-op':'source change',status:'preflight passed; no deployment performed'};
 }
 if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
@@ -57,4 +43,3 @@ if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
   const candidate=readFileSync('dist/'+name+'/worker.mjs','utf8');
   console.log(JSON.stringify(verifyRelease({name,entry:manifest.workers[name],observed:observation.workers[name],template,candidate}),null,2));
 }
-
