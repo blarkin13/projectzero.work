@@ -139,7 +139,7 @@ test('logout requires same-origin POST',async()=>{
 
 test('Google beta renders only Google sign in, requires consent and origin, and turns off email auth',async()=>{
  const {sql,env}=fixture(true);
- for(const p of ['/','/auth/signup','/auth/login']){const r=await worker.fetch(request(p),env);assert.equal(r.status,200);const h=await r.text();assert.match(h,/Sign in with Google/);assert.doesNotMatch(h,/turnstile|Email my sign-in code/);if(p!=='/')assert.equal(r.headers.get('referrer-policy'),'same-origin');}
+ for(const p of ['/','/auth/signup','/auth/login']){const r=await worker.fetch(request(p),env);assert.equal(r.status,200);const h=await r.text();assert.match(h,/Sign in with Google/);assert.doesNotMatch(h,/turnstile|Email my sign-in code/);if(p!=='/'){assert.equal(r.headers.get('referrer-policy'),'same-origin');assert.match(r.headers.get('content-security-policy'),/form-action 'self' https:\/\/accounts\.google\.com/);}}
  assert.equal((await worker.fetch(request('/auth/email',{method:'POST'}),env)).status,503);
  assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:'https://evil.example','content-type':'application/x-www-form-urlencoded'},body:'accept=yes'}),env)).status,403);
  assert.equal((await worker.fetch(request('/auth/login',{method:'POST',headers:{origin:HOST,'content-type':'application/x-www-form-urlencoded'},body:'accept=no'}),env)).status,400);
