@@ -2,19 +2,37 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import account from '../workers/projectzero-commercial/worker.mjs';
 import landing from '../workers/projectzero-landing/worker.mjs';
+import guides from '../workers/projectzero-guides/worker.mjs';
 const origin='https://www.projectzero.work';
 const accountOrigin='https://account.projectzero.work';
 const env={CUSTOMER_ACCESS:'disabled'};
-const get=(p,method='GET')=>landing.fetch(new Request(origin+p,{method}));
+const guideOrigin='https://guides.projectzero.work';
+const catalog={schema:1,providers:['Fresh Example','Stale Example'].map((name,i)=>({name,category:'hosting',url:'https://example.com/',pricing_url:'https://example.com/pricing',pricing:'Example historical pricing',benefits:'Example hosting benefits',best_for:'Example website',tradeoffs:'Verify limits',verified_at:i?'2020-01-01':new Date().toISOString().slice(0,10)}))};
+globalThis.caches={default:{match:async()=>undefined,put:async()=>{}}};
+const guideEnv={GUIDES:{get:async()=>({json:async()=>catalog})}};
+const ctx={waitUntil(){}};
+const guideFetch=req=>guides.fetch(req,guideEnv,ctx);
+const get=(p,method='GET',binding={fetch:guideFetch})=>landing.fetch(new Request(origin+p,{method}),{GUIDE_SITEMAP:binding});
 const acct=(p,method='GET')=>account.fetch(new Request(accountOrigin+p,{method}),env);
-test('main public sitemap contains only canonical public pages',async()=>{
- const res=await get('/sitemap.xml');
- assert.equal(res.status,200);assert.match(res.headers.get('content-type'),/^application\/xml/);
- const xml=await res.text();
- assert.match(xml,/xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"/);
- assert.deepEqual([...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map(m=>m[1]),['/','/demo','/privacy','/terms'].map(p=>origin+p));
+test('main public sitemap contains all canonical public and guide pages, no private URLs',async()=>{
+ const res=await get('/sitemap.xml');assert.equal(res.status,200);assert.match(res.headers.get('content-type'),/^application\/xml/);
+ const xml=await res.text();assert.match(xml,/xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"/);
+ const locs=s=>[...s.matchAll(/<loc>(.*?)<\/loc>/g)].map(m=>m[1]);
+ const guideMap=await guideFetch(new Request(guideOrigin+'/sitemap.xml'));assert.equal(guideMap.status,200);
+ const guideURLs=locs(await guideMap.text());
+ assert.deepEqual(locs(xml),['/','/demo','/privacy','/terms'].map(p=>origin+p).concat(guideURLs));
+ assert.equal(new Set(guideURLs).size,guideURLs.length);
+ for(const p of ['/','/privacy','/platforms','/compare','/methodology','/tools','/setups','/platforms/fresh-example','/platforms/stale-example','/tools/website-budget-worksheet'])assert.ok(guideURLs.includes(guideOrigin+p),p);
+ for(const u of guideURLs){const r=await guideFetch(new Request(u));assert.equal(r.status,200,u);assert.doesNotMatch(r.headers.get('x-robots-tag')||'',/noindex/i,u);assert.ok((await r.text()).includes('rel="canonical" href="'+u+'"'),u);}
+ const stale=await (await guideFetch(new Request(guideOrigin+'/platforms/stale-example'))).text();assert.match(stale,/Current rates require verification/);
  assert.doesNotMatch(xml,/account\.projectzero|\/auth\/|\/api\/|\/workspaces\/|\/internal\//);
  assert.match(await (await get('/robots.txt')).text(),/Sitemap: https:\/\/www\.projectzero\.work\/sitemap\.xml/);
+ assert.match(await (await guideFetch(new Request(guideOrigin+'/robots.txt'))).text(),/Sitemap: https:\/\/guides\.projectzero\.work\/sitemap\.xml/);
+ const head=await get('/sitemap.xml','HEAD');assert.equal(head.status,200);assert.equal(await head.text(),'');
+});
+test('main sitemap fails closed on unavailable or contaminated guide sitemap',async()=>{
+ const broken=await get('/sitemap.xml','GET',{});assert.equal(broken.status,503);assert.equal(broken.headers.get('cache-control'),'no-store');
+ const forged=await get('/sitemap.xml','GET',{fetch:async()=>new Response('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://account.projectzero.work/</loc></url></urlset>',{headers:{'content-type':'application/xml'}})});assert.equal(forged.status,503);
 });
 test('canonical legal pages and homepage links are public',async()=>{
  for(const [path,title] of [['/privacy','Privacy Policy'],['/terms','Terms of Service']]){
