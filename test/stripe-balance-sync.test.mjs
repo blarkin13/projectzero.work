@@ -59,3 +59,15 @@ test('manual sync requires owner authentication',async()=>{
  const req=new Request('https://dash.projectzero.work/finance/sources/stripe-refresh',{method:'POST',headers:{Origin:'https://dash.projectzero.work'}});
  assert.equal((await worker.fetch(req,f.env,{})).status,403);assert.equal(f.writes.length,0);
 });
+
+test('native read failure reports only allowlisted stages without exposing provider responses',async()=>{
+ const f=fixture(()=>({data:[],has_more:false}),[3]),diagnostics=[];
+ const request=(url,opts)=>{const id=opts.headers.Authorization.split('_').at(-1);
+  if(id==='apt')return new Response('private response',{status:403});
+  if(id==='hum'&&url.includes('balance_transactions'))return new Response('private response',{status:401});
+  if(id==='yarr')return Response.json({id:'acct_wrong'});
+  return f.request(url,opts);
+ };
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,request,f.loadConfigs,diagnostics),['unavailable']);
+ assert.deepEqual(diagnostics,['identity_403','balance_401','account_mismatch','credential_invalid']);assert.equal(f.writes.length,0);
+});
