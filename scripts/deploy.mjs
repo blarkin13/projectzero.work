@@ -151,13 +151,22 @@ export async function release(opts, deps = {}) {
   const wantBindings = (metadata.bindings||[]).filter(b => !SECRET_TYPES.includes(b.type));
   const typeClash = wantBindings.filter(w => liveBindings.some(l => l.name === w.name && l.type !== w.type)).map(w => w.name);
   if (typeClash.length) throw new ReleaseError('Binding type differs between production and the release manifest: '+typeClash.join(', ')+'; reconcile before releasing');
+  // Same name and type but different settings (database, bucket, service, plain-text value, ...) would be
+  // overwritten by the manifest on upload. Refuse, naming the binding and field but never the value.
+  const settingClash = [];
+  for (const w of wantBindings) {
+    const l = liveBindings.find(x => x.name === w.name && x.type === w.type);
+    if (!l) continue;
+    for (const k of Object.keys(w)) if (!['name','type'].includes(k) && k in l && JSON.stringify(l[k]) !== JSON.stringify(w[k])) settingClash.push(w.name+'.'+k);
+  }
+  if (settingClash.length) throw new ReleaseError('Binding settings differ between production and the release manifest: '+settingClash.join(', ')+' (values not shown); update PZ_BUILD_MANIFEST before releasing');
   const carried = liveBindings.filter(l => !wantBindings.some(w => w.name === l.name));
   const added = wantBindings.filter(w => !liveBindings.some(l => l.name === w.name));
   if (carried.some(b => !b.name || !b.type)) throw new ReleaseError('A live binding is missing its name or type; reconcile before releasing');
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
   const missing = (entry.required_secret_names||[]).filter(n => !liveSecrets.has(n));
   if (missing.length) throw new ReleaseError('Production is missing required secrets: '+missing.join(', '));
-  if (crons(schedules?.schedules) !== crons(entry.schedules)) throw new ReleaseError('Production cron schedules differ from the release manifest; reconcile before releasing');
+  if (crons(schedules?.schedules) !== crons(entry.schedules)) throw new ReleaseError('Production cron schedules '+crons(schedules?.schedules)+' differ from the release manifest '+crons(entry.schedules)+'; reconcile before releasing');
 
   let mig = null;
   if (migration) {
