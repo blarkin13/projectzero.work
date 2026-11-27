@@ -156,3 +156,18 @@ test('Stripe sync uses only named encrypted owner Chamber connections, audits us
  delete env.VAULT_MASTER_KEY;calls.length=0;
  assert.deepEqual(await stripeRefresh(env,new Date('2026-11-27T21:00:00Z'),request),['unavailable']);assert.equal(calls.length,0);
 });
+
+test('Google login manager is owner-only and imports only the reviewed project client without leaking credentials',async()=>{
+ const {env,state,get,post}=await setup();
+ const path='/integrations/google-login';
+ assert.equal((await dash.fetch(new Request(D+path,{headers:{accept:'application/json'}}),env,{})).status,403);
+ const page=await get(path);assert.equal(page.status,200);assert.match(page.text,/Google login manager/);assert.match(page.text,/account\.statatlas\.app\/auth\/google\/callback/);
+ const credentials=JSON.stringify({web:{client_id:'synthetic-client-id.apps.googleusercontent.com',client_secret:'synthetic-google-secret',redirect_uris:['https://account.projectzero.work/auth/google/callback']}});
+ const fields={action:'import',project:'pz',confirm:'yes',credentials};
+ assert.equal((await post(path,fields,'https://evil.example')).status,403);
+ assert.equal((await post(path,{...fields,project:'hum'})).status,400);
+ const saved=await post(path,fields);assert.equal(saved.status,200);assert.match(await saved.text(),/Google credentials stored securely/);
+ const row=state.prepare("SELECT * FROM vault_secrets WHERE name='google-login-pz'").get();assert.equal(row.project,'Project Zero');assert.equal(row.hint,'Google Web client');assert.doesNotMatch(row.ciphertext,/synthetic-google-secret/);
+ assert.equal((await post(path,fields)).status,409);
+ const html=(await get(path)).text;assert.match(html,/Credentials stored in Chamber/);assert.doesNotMatch(html,/synthetic-google-secret|synthetic-client-id/);
+});
