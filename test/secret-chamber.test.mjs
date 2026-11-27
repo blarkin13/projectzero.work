@@ -4,7 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import account from '../workers/projectzero-commercial/worker.mjs';
-import dash from '../workers/portfolio-owner/worker.mjs';
+import dash,{stripeRefresh} from '../workers/portfolio-owner/worker.mjs';
 const A='https://account.projectzero.work',D='https://dash.projectzero.work';
 const token=()=>Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
 const sha=v=>createHash('sha256').update(v).digest('hex');
@@ -119,4 +119,38 @@ test('migration 006 is additive and idempotent',()=>{
  const m=readFileSync('schema/migrations/006-secret-chamber.sql','utf8');db.exec(m);db.exec(m);
  assert.equal(db.prepare('SELECT COUNT(*) n FROM mailbox_state').get().n,1);
  assert.throws(()=>db.prepare("INSERT INTO vault_secrets(id,workspace_id,name,kind,ciphertext,iv,bytes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)").run('x'.repeat(36),'owner','n','cloudflare-token','','',0,'t','t'));
+});
+
+test('Stripe sync uses only named encrypted owner Chamber connections, audits use and respects revocation',async()=>{
+ const {env,state,get,post}=await setup();
+ const spec=[['APT','SiteAPT'],['HUM','Humperdinck'],['YARR','Yarr'],['OWL','The Story Owl']];
+ const key=n=>['rk','live',n].join('_'),config=n=>JSON.stringify({account_id:'acct_'+n,api_key:key(n)},null,2);
+ const add=([n,project])=>({name:'PZ_STRIPE_'+n+'_READ',project,kind:'stripe-key',value:config(n),confirm:'yes'});
+ const apt=add(spec[0]);
+ assert.equal((await post('/secrets/create',{...apt,project:'Yarr'})).status,400);
+ assert.equal((await post('/secrets/create',{...apt,kind:'other'})).status,400);
+ assert.equal((await post('/secrets/create',{...apt,value:JSON.stringify({account_id:'acct_APT',api_key:['sk','live','APT'].join('_')})})).status,400);
+ for(const entry of spec)assert.equal((await post('/secrets/create',add(entry))).status,303);
+ const page=await get('/secrets');
+ assert.match(page.text,/Stripe reporting connections/);assert.match(page.text,/Stored<\/span><span><code>PZ_STRIPE_APT_READ/);
+ for(const [n] of spec){assert(!page.text.includes(key(n)));assert(!page.text.includes('acct_'+n));}
+ const rows=state.prepare('SELECT * FROM vault_secrets').all();
+ assert(rows.every(r=>r.hint==='Restricted Stripe connection'&&!r.ciphertext.includes('rk_live')));
+ const objects=new Map(),calls=[];
+ env.BRAND_FILES={
+  async get(k){const o=objects.get(k);return o?{size:o.length,etag:'stored',json:async()=>JSON.parse(o)}:null},
+  async put(k,v){objects.set(k,v);return {etag:'stored'}}
+ };
+ const request=async(url,opts)=>{const n=opts.headers.Authorization.split('_').at(-1);calls.push(n);assert.equal(opts.method,'GET');return Response.json(url.endsWith('/account')?{id:'acct_'+n}:{data:[],has_more:false})};
+ const cutoff=new Date('2026-11-27T19:00:00Z');
+ assert.deepEqual(await stripeRefresh(env,cutoff,request),['complete']);
+ assert.equal(calls.length,8);assert.equal(state.prepare("SELECT COUNT(*) n FROM vault_audit WHERE action='Used' AND actor='Stripe sync'").get().n,4);
+ const r=rows.find(r=>r.name===apt.name);
+ assert.equal((await post('/secrets/revoke',{id:r.id,revision:'1',confirm_name:apt.name})).status,303);
+ // Legacy Worker binding must not re-enable a revoked credential.
+ env.PZ_STRIPE_APT_READ=config('APT');calls.length=0;
+ assert.deepEqual(await stripeRefresh(env,new Date('2026-11-27T20:00:00Z'),request),['partial']);
+ assert(!calls.includes('APT'));assert.equal(JSON.parse(objects.get('finance/stripe-balance-v1/2026-11.json')).accounts[0].complete,false);
+ delete env.VAULT_MASTER_KEY;calls.length=0;
+ assert.deepEqual(await stripeRefresh(env,new Date('2026-11-27T21:00:00Z'),request),['unavailable']);assert.equal(calls.length,0);
 });
