@@ -159,14 +159,15 @@ export async function release(opts, deps = {}) {
     if (!l) continue;
     for (const k of Object.keys(w)) if (!['name','type'].includes(k) && k in l && JSON.stringify(l[k]) !== JSON.stringify(w[k])) settingClash.push(w.name+'.'+k);
   }
-  if (settingClash.length) throw new ReleaseError('Binding settings differ between production and the release manifest: '+settingClash.join(', ')+' (values not shown); update PZ_BUILD_MANIFEST before releasing');
+  // A code release never changes production configuration: same-named bindings keep production's settings.
+  const effective = wantBindings.map(w => liveBindings.find(l => l.name === w.name && l.type === w.type) || w);
   const carried = liveBindings.filter(l => !wantBindings.some(w => w.name === l.name));
   const added = wantBindings.filter(w => !liveBindings.some(l => l.name === w.name));
   if (carried.some(b => !b.name || !b.type)) throw new ReleaseError('A live binding is missing its name or type; reconcile before releasing');
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
   const missing = (entry.required_secret_names||[]).filter(n => !liveSecrets.has(n));
   if (missing.length) throw new ReleaseError('Production is missing required secrets: '+missing.join(', '));
-  if (crons(schedules?.schedules) !== crons(entry.schedules)) throw new ReleaseError('Production cron schedules '+crons(schedules?.schedules)+' differ from the release manifest '+crons(entry.schedules)+'; reconcile before releasing');
+  const liveCrons = crons(schedules?.schedules), cronDrift = liveCrons !== crons(entry.schedules);
 
   let mig = null;
   if (migration) {
@@ -179,14 +180,14 @@ export async function release(opts, deps = {}) {
   const addVault = worker === 'portfolio-owner' && !!vaultKey && !liveSecrets.has('VAULT_MASTER_KEY');
   if (vaultKey && !/^[A-Za-z0-9+/]{43}=$/.test(vaultKey)) throw new ReleaseError('VAULT_MASTER_KEY must be 32 bytes in base64 (openssl rand -base64 32)');
   const candidateSha = sha(candidate);
-  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', unconfigured_live: config.unconfigured ? 'production is running '+config.unconfigured+' unfilled __PZ_CONFIG__ placeholders; this release restores them from PZ_BUILD_MANIFEST' : 'no', config_drift: config.drift.length ? config.drift.join(', ')+' differ from PZ_BUILD_MANIFEST; live values kept — update the manifest' : 'none', bindings: (carried.length ? 'kept from production (add to PZ_BUILD_MANIFEST): '+carried.map(b => b.name+':'+b.type).join(', ') : 'match manifest')+(added.length ? '; new: '+added.map(b => b.name+':'+b.type).join(', ') : ''), vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
+  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', unconfigured_live: config.unconfigured ? 'production is running '+config.unconfigured+' unfilled __PZ_CONFIG__ placeholders; this release restores them from PZ_BUILD_MANIFEST' : 'no', config_drift: config.drift.length ? config.drift.join(', ')+' differ from PZ_BUILD_MANIFEST; live values kept — update the manifest' : 'none', schedules: cronDrift ? 'production '+liveCrons+' kept (manifest lists '+crons(entry.schedules)+'; update PZ_BUILD_MANIFEST)' : 'match manifest', binding_settings: settingClash.length ? 'production values kept for '+settingClash.join(', ')+' (update PZ_BUILD_MANIFEST)' : 'match manifest', bindings: (carried.length ? 'kept from production (add to PZ_BUILD_MANIFEST): '+carried.map(b => b.name+':'+b.type).join(', ') : 'match manifest')+(added.length ? '; new: '+added.map(b => b.name+':'+b.type).join(', ') : ''), vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
   log(plan);
   if (mode === 'preflight') return {...plan, status: 'preflight passed; nothing changed'};
 
   if (mig) { await cf.call('/d1/database/'+mig.database_id+'/query', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sql: mig.sql})}); log({migration_applied: mig.file}); }
   if (plan.change === 'no-op' && !addVault) return {...plan, status: 'no-op; already live'+(mig ? ' (migration applied)' : '')};
 
-  const bindings = [...wantBindings, ...carried];
+  const bindings = [...effective, ...carried];
   if (addVault) bindings.push({type: 'secret_text', name: 'VAULT_MASTER_KEY', text: vaultKey});
   const upload = {...metadata, main_module: 'worker.js', bindings, keep_bindings: SECRET_TYPES, annotations: {'workers/tag': commit, 'workers/message': 'GitHub Actions release'+(runId ? ' run '+runId : '')}};
   const form = new FormData();
@@ -197,6 +198,8 @@ export async function release(opts, deps = {}) {
   const newVersion = after?.deployments?.[0]?.versions?.[0]?.version_id || '';
   const liveAfter = sha(await cf.call(s+'/content/v2'));
   if (liveAfter !== candidateSha) throw new ReleaseError('Uploaded, but live source hash does not match the candidate. Roll back to '+liveVersion+' and investigate.');
+  const cronsAfter = crons((await cf.call(s+'/schedules'))?.schedules);
+  if (cronsAfter !== liveCrons) throw new ReleaseError('Uploaded, but cron schedules changed from '+liveCrons+' to '+cronsAfter+'. Restore them and investigate.');
   return {...plan, new_version: newVersion, rollback_version: liveVersion, vault_master_key: addVault ? 'set' : plan.vault_master_key, status: 'deployed; verify live now'};
 }
 

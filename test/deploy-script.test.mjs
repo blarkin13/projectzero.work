@@ -56,10 +56,12 @@ test('release refuses drift, split traffic, binding/schedule changes and destruc
  await assert.rejects(run(world({versions:[{version_id:'11111111-1111-4111-8111-111111111111',percentage:50},{version_id:'x',percentage:50}]})),/one active version at 100%/);
  await assert.rejects(run(world({bindings:[{name:'PORTFOLIO',type:'kv_namespace',namespace_id:'n'},{name:'OWNER_EMAIL',type:'secret_text'}]})),/Binding type differs.*PORTFOLIO/);
  await assert.rejects(run(world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-1'}]})),/missing required secrets: OWNER_EMAIL/);
- await assert.rejects(run(world({crons:['0 * * * *']})),/cron schedules \["0 \* \* \* \*"\] differ from the release manifest \["\*\/15 \* \* \* \*"\]/);
- // A same-named binding pointing elsewhere (or a changed plain-text value) is refused without printing values.
- const clash=run(world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-OTHER'},{name:'OWNER_EMAIL',type:'secret_text'}]}));
- await assert.rejects(clash,e=>/Binding settings differ.*PORTFOLIO\.id/.test(e.message)&&!e.message.includes('db-OTHER'));
+ // Production configuration is never changed by a code release: differing cron lists and binding settings are kept and reported.
+ const cronW=world({crons:['0 * * * *']});const cronOut=await run(cronW,{mode:'deploy'});
+ assert.match(cronOut.schedules,/production \["0 \* \* \* \*"\] kept/);assert.equal(cronW.st.puts.length,1);
+ const setW=world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-LIVE'},{name:'OWNER_EMAIL',type:'secret_text'}]});const setOut=await run(setW,{mode:'deploy'});
+ assert.match(setOut.binding_settings,/production values kept for PORTFOLIO\.id/);assert.ok(!JSON.stringify(setOut).includes('db-LIVE'));
+ assert.equal(setW.st.puts[0].bindings.find(b=>b.name==='PORTFOLIO').id,'db-LIVE');
  await assert.rejects(run(world(),{vaultKey:'short'}),/32 bytes/);
  assert.throws(()=>parseMigration('-- D1 binding: portfolio-owner/PORTFOLIO\nDROP TABLE mailbox_state;'),ReleaseError);
  assert.throws(()=>parseMigration('CREATE TABLE IF NOT EXISTS x(a);'),/header/);
