@@ -363,9 +363,12 @@ function stripeRanges(cutoff){
 async function stripeGet(config,path,request){
  // Standard keys have broad powers; this reporting path permits only these two GET operations.
  if(path!=='account'&&!/^balance_transactions\?limit=100(?:&starting_after=[A-Za-z0-9_%+.-]+)?$/.test(path))throw Error('Stripe reporting endpoint not permitted');
- const r=await request('https://api.stripe.com/v1/'+path,{method:'GET',headers:{Authorization:'Bearer '+config.api_key,'Stripe-Version':'2026-11-18.endive'},redirect:'error',signal:AbortSignal.timeout(10000)});
- if(!r.ok){const error=new Error('Stripe read unavailable');error.stripeStatus=r.status;throw error;}
- return r.json();
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+ try{
+  let r;try{r=await request('https://api.stripe.com/v1/'+path,{method:'GET',headers:{Authorization:'Bearer '+config.api_key,'Stripe-Version':'2026-11-18.endive'},redirect:'error',signal:controller.signal})}catch{const error=new Error('Stripe transport unavailable');error.stripeReason=controller.signal.aborted?'timeout':'transport';throw error}
+  if(!r.ok){const error=new Error('Stripe read unavailable');error.stripeStatus=r.status;throw error;}
+  try{return await r.json()}catch{const error=new Error('Stripe response invalid');error.stripeReason=controller.signal.aborted?'timeout':'invalid_json';throw error}
+ }finally{clearTimeout(timer)}
 }
 function stripeGroup(spec,rows,range){
  const groups=new Map(),start=Date.parse(range.start)/1000,end=Date.parse(range.end)/1000;let count=0;
@@ -402,7 +405,7 @@ async function stripeReadAccount(spec,config,ranges,request,report=()=>{}){
   }
   const results=ranges.map(r=>exhausted||oldest<Date.parse(r.start)/1000?stripeGroup(spec,rows,r):stripeIncomplete(spec));
   report(results.every(r=>r.complete)?'complete':'page_limit');return results;
- }catch(error){return failed([400,401,403,429].includes(error.stripeStatus)?stage+'_'+error.stripeStatus:stage+'_unavailable')}
+ }catch(error){const code=error.stripeStatus,reason=[400,401,403,404,405,429].includes(code)?String(code):Number.isInteger(code)&&code>=500&&code<=599?'upstream':Number.isInteger(code)?'http_other':['transport','timeout','invalid_json'].includes(error.stripeReason)?error.stripeReason:'unavailable';return failed(stage+'_'+reason)}
 }
 function stripeSnapshotValid(x,month){
  if(x?.schema!==1||x.month!==month||x.source!==STRIPE_SNAPSHOT_SOURCE||!Array.isArray(x.accounts)||x.accounts.length!==4)return false;
@@ -452,7 +455,7 @@ export async function stripeRefresh(env,cutoff=new Date(),request=fetch,loadConf
 }
 function stripeStatus(outcomes){return outcomes.includes('failed')||outcomes.includes('conflict')?'failed':outcomes.includes('unavailable')?'unavailable':outcomes.includes('partial')?'partial':outcomes.every(x=>x==='unchanged')?'unchanged':'complete'}
 const stripeStatusMessages={complete:'Stripe balance snapshots refreshed and verified.',partial:'Stripe refreshed with partial coverage. Review each business below.',unavailable:'Stripe access unavailable for all accounts in at least one period. Existing snapshots were retained.',failed:'Stripe snapshot could not be safely written or verified. Review the current coverage and retry.',unchanged:'A snapshot with an equal or newer cutoff already exists.'};
-const stripeDiagnosticLabels={credential_invalid:'Missing, malformed or duplicate live connection',account_mismatch:'Account identity did not match',identity_400:'Account identity request rejected (400)',identity_401:'Live key rejected (401)',identity_403:'Account identity read permission denied (403)',identity_429:'Account identity rate limited (429)',identity_unavailable:'Account identity read unavailable',balance_400:'Balance request rejected (400)',balance_401:'Balance credential rejected (401)',balance_403:'Balance read permission denied (403)',balance_429:'Balance read rate limited (429)',balance_unavailable:'Balance read unavailable',invalid_response:'Invalid balance response',page_limit:'Page limit reached',complete:'Complete'};
+const stripeDiagnosticLabels={credential_invalid:'Missing, malformed or duplicate live connection',account_mismatch:'Account identity did not match',identity_400:'Account identity request rejected (400)',identity_401:'Live key rejected (401)',identity_403:'Account identity read permission denied (403)',identity_429:'Account identity rate limited (429)',identity_404:'Account identity endpoint not found (404)',identity_405:'Account identity method unavailable (405)',identity_upstream:'Stripe account identity service returned 5xx',identity_http_other:'Unexpected account identity HTTP status',identity_transport:'Stripe account identity network request failed',identity_timeout:'Stripe account identity request timed out',identity_invalid_json:'Stripe account identity response was not valid JSON',identity_unavailable:'Account identity read unavailable',balance_400:'Balance request rejected (400)',balance_401:'Balance credential rejected (401)',balance_403:'Balance read permission denied (403)',balance_429:'Balance read rate limited (429)',balance_404:'Balance endpoint not found (404)',balance_405:'Balance method unavailable (405)',balance_upstream:'Stripe balance service returned 5xx',balance_http_other:'Unexpected balance HTTP status',balance_transport:'Stripe balance network request failed',balance_timeout:'Stripe balance request timed out',balance_invalid_json:'Stripe balance response was not valid JSON',balance_unavailable:'Balance read unavailable',invalid_response:'Invalid balance response',page_limit:'Page limit reached',complete:'Complete'};
 async function stripeManual(req,env){if(!sameOriginPost(req))return response('Forbidden',403);let status='failed';const diagnostics=[];try{status=stripeStatus(await stripeRefresh(env,new Date(),fetch,stripeChamberConfigs,diagnostics))}catch{}const codes=STRIPE_SOURCES.map((_,i)=>Object.hasOwn(stripeDiagnosticLabels,diagnostics[i])?diagnostics[i]:'');return new Response(null,{status:303,headers:{...headers,Location:'/finance/sources?stripe_refresh='+status+(['complete','unchanged'].includes(status)?'':'&stripe_diagnostics='+encodeURIComponent(codes.join(',')))}})}
 async function stripeScheduled(env){const status=stripeStatus(await stripeRefresh(env));if(!['complete','unchanged'].includes(status))console.warn('Stripe balance snapshot: '+status)}
 async function afStripeRead(env,month){try{const obj=await env.BRAND_FILES.get('finance/stripe-balance-v1/'+month+'.json');if(!obj||obj.size>100000)return null;const x=await obj.json();return stripeSnapshotValid(x,month)?x:null}catch{return null}}
