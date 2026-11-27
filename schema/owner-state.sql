@@ -27,3 +27,7 @@ CREATE TRIGGER portfolio_expense_created AFTER INSERT ON portfolio_expenses BEGI
 -- Project Zero private inbound mail index. Original MIME is retained in private R2.
 CREATE TABLE IF NOT EXISTS projectzero_mail_messages(id TEXT PRIMARY KEY CHECK(length(id)=64),sender TEXT NOT NULL,recipient TEXT NOT NULL,subject TEXT NOT NULL,body TEXT NOT NULL CHECK(length(body)<=20000),message_id TEXT NOT NULL,created_at TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes>=0 AND bytes<=10485760));
 CREATE INDEX IF NOT EXISTS projectzero_mail_received ON projectzero_mail_messages(created_at DESC);
+
+-- Central inbox spam overrides. NULL row = automatic classification; spam=1 forced Spam, spam=0 forced Inbox and trusted sender.
+CREATE TABLE IF NOT EXISTS mailbox_spam(project TEXT NOT NULL,message_id TEXT NOT NULL CHECK(length(message_id) BETWEEN 1 AND 160),sender TEXT NOT NULL DEFAULT '' CHECK(length(sender)<=254),spam INTEGER NOT NULL CHECK(spam IN (0,1)),updated_at TEXT NOT NULL,PRIMARY KEY(project,message_id));
+CREATE INDEX IF NOT EXISTS mailbox_spam_trusted ON mailbox_spam(spam,sender);
