@@ -60,6 +60,7 @@ export async function release(opts, deps = {}) {
   const {worker, mode, manifest, candidate, metadata, commit, versionId, migration, vaultKey, runId} = opts;
   const log = deps.log || (() => {});
   const gitShow = deps.gitShow || ((rev, path) => execFileSync('git', ['show', rev+':'+path], {encoding: 'utf8', maxBuffer: 20e6}));
+  const gitLog = deps.gitLog || (path => execFileSync('git', ['log', '--format=%H', '-n', '30', 'HEAD', '--', path], {encoding: 'utf8'}).split('\n').filter(Boolean));
   if (!WORKERS.includes(worker)) throw new ReleaseError('Unknown worker');
   if (!['preflight','deploy','rollback'].includes(mode)) throw new ReleaseError('Mode must be preflight, deploy or rollback');
   const entry = manifest?.workers?.[worker];
@@ -88,9 +89,15 @@ export async function release(opts, deps = {}) {
     let expected; try { expected = restore(gitShow(tag, 'workers/'+worker+'/worker.mjs'), entry.replacements); } catch (e) { throw new ReleaseError('Live version is tagged '+tag.slice(0,12)+' but that build could not be reproduced: '+e.message); }
     if (sha(expected) !== liveSha) throw new ReleaseError('Production source differs from its tagged commit '+tag.slice(0,12)+'; reconcile before releasing');
     baseline = 'tagged commit '+tag.slice(0,12);
-  } else {
-    if (liveSha !== entry.source_sha256) throw new ReleaseError('Production source ('+liveSha.slice(0,12)+') differs from the manifest baseline and has no release tag; reconcile before releasing');
+  } else if (liveSha === entry.source_sha256) {
     baseline = 'manifest source_sha256';
+  } else {
+    // Untagged release made outside this workflow: accept it only if some recent commit of this
+    // Worker rebuilds (with the current manifest) to exactly the live source.
+    const path = 'workers/'+worker+'/worker.mjs';
+    const match = gitLog(path).find(rev => { try { return sha(restore(gitShow(rev, path), entry.replacements)) === liveSha; } catch { return false; } });
+    if (!match) throw new ReleaseError('Production source ('+liveSha.slice(0,12)+') matches neither the manifest baseline nor any of the last 30 commits of '+path+'; reconcile before releasing');
+    baseline = 'untagged; matches commit '+match.slice(0,12);
   }
   if (bindingSet(settings?.bindings) !== bindingSet(metadata.bindings)) throw new ReleaseError('Production bindings differ from the release manifest; reconcile before releasing');
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
