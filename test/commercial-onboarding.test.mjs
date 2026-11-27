@@ -59,7 +59,7 @@ test('automatic instructions, atomic project quota, independent workspace names 
   assert.equal((await create(r,'alpha','owner',brief('Third'))).status,409);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM project_onboarding').get().n,3);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM audit_events WHERE action='project.created'").get().n,3);
-  const html=await r('/workspaces/alpha/setup');assert.equal(html.status,200);assert.match(html.data,/Set up a project/);assert.match(html.data,/Advanced preferences \(optional\)/);
+  const html=await r('/workspaces/alpha/setup');assert.equal(html.status,200);assert.match(html.data,/Set up a project/);assert.match(html.data,/Advanced preferences \(optional\)/);assert.match(html.data,/<footer class="pz-standard-footer"/);assert.match(html.data,/href="https:\/\/www\.projectzero\.work\/terms"/);
   assert.match(html.headers.get('content-security-policy'),/connect-src 'self'/);assert.equal(html.headers.get('cache-control'),'private, no-store');
   const script=await r('/assets/customer-setup-v1.js');assert.equal(script.status,200);assert.doesNotThrow(()=>new Function(script.data));
   assert.equal((await r('/assets/customer-setup-v1.js',{actor:null})).status,401);

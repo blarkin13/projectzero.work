@@ -10,8 +10,8 @@ test('landing heading hierarchy, target sizing and consent-only analytics',async
  const html=await res.text();
  const tags=[...html.matchAll(/<h([1-6])(?:\s[^>]*)?>/g)].map(x=>Number(x[1]));
  assert.equal(tags[0],1);for(let i=1;i<tags.length;i++)assert.ok(tags[i]<=tags[i-1]+1,'heading level skipped');
- assert.ok(html.includes('min-height:44px'));assert.ok(html.includes('.footlinks a,.footlinks button'));assert.ok(html.includes('/assets/session-v2.js'));assert.ok(!html.includes('static.cloudflareinsights.com'));
- const footer=html.match(/<footer class="foot">[\s\S]*?<\/footer>/)[0];assert.match(footer,/<div class="footlinks">[\s\S]*Analytics preferences[\s\S]*Privacy Policy[\s\S]*Terms of Service<\/a><\/div>/);
+ assert.ok(html.includes('min-height:44px'));assert.match(html,/button\.pz-footer-link\{min-height:44px\}/);assert.ok(html.includes('/assets/session-v2.js'));assert.ok(!html.includes('static.cloudflareinsights.com'));
+ const footer=html.match(/<footer class="pz-standard-footer"[\s\S]*?<\/footer>/)[0];assert.match(footer,/Privacy Policy[\s\S]*Terms of Service[\s\S]*<button id="pz-analytics-settings"[^>]*>Analytics preferences<\/button>/);
  assert.match(res.headers.get('Content-Security-Policy'),/script-src 'self' https:\/\/siteapt\.app;/);
 });
 test('public visitors never probe the private dashboard; returning owners only redirect on authorized session response',async()=>{
