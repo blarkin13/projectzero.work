@@ -131,6 +131,8 @@ test('Stripe sync uses only named encrypted owner Chamber connections, audits us
  assert.equal((await post('/secrets/create',{...apt,kind:'other'})).status,400);
  assert.equal((await post('/secrets/create',{...apt,value:JSON.stringify({account_id:'acct_APT',api_key:['sk','live','APT'].join('_')})})).status,400);
  for(const entry of spec)assert.equal((await post('/secrets/create',add(entry))).status,303);
+ // Simulate credentials saved in the earlier Chamber using its default project.
+ state.prepare("UPDATE vault_secrets SET project='Shared systems' WHERE name LIKE 'PZ_STRIPE_%'").run();
  const page=await get('/secrets');
  assert.match(page.text,/Stripe reporting connections/);assert.match(page.text,/Stored<\/span><span><code>PZ_STRIPE_APT_READ/);
  for(const [n] of spec){assert(!page.text.includes(key(n)));assert(!page.text.includes('acct_'+n));}
