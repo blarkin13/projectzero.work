@@ -26,6 +26,7 @@ async function setup(){
  const tracker=new DatabaseSync(':memory:');tracker.exec("CREATE TABLE tracker_api_keys(id TEXT PRIMARY KEY, actor TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT)");
  const agentKey='ptk_'+'a1'.repeat(32);tracker.prepare("INSERT INTO tracker_api_keys VALUES('k1','Claude',?,'2026-01-01',?,NULL)").run(sha(agentKey),new Date(Date.now()+86400000).toISOString());
  const env={ACCOUNT_AUTH_DB:authDb,OWNER_EMAIL:'owner@gmail.com',PORTFOLIO:d1(state),TRACKER:d1(tracker),VAULT_MASTER_KEY:Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64')};
+ env.__cookie=cookie;
  const get=async path=>{const r=await dash.fetch(new Request(D+path,{headers:{cookie,accept:'text/html'}}),env,{});return {status:r.status,text:await r.text()}};
  const post=(path,fields,origin=D)=>dash.fetch(new Request(D+path,{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(fields)}),env,{});
  const agent=(body,key=agentKey)=>dash.fetch(new Request(D+'/api/agent/deploy',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify(body)}),env,{});
@@ -71,8 +72,9 @@ test('agent deploy action enforces merge, checks and drift gates and never expos
  const replacements=Object.fromEntries(placeholders.map((k,i)=>[k,'https://cfg'+i+'.example']));
  let live='// previously deployed source';
  const manifest={schema:1,workers:{'portfolio-owner':{metadata:{main_module:'worker.js',compatibility_date:'2026-01-01',bindings:[{name:'PORTFOLIO',type:'d1',id:'db-id'}]},replacements,required_secret_names:['VAULT_MASTER_KEY'],schedules:['*/15 * * * *'],source_sha256:sha(live),template_sha256:'0'.repeat(64)}}};
- for(const [name,kind,value] of [['cloudflare-deploy-token','cloudflare-token',CF_TOKEN],['cloudflare-account-id','cloudflare-account',ACCOUNT],['build-manifest','build-manifest',JSON.stringify(manifest)]])assert.equal((await post('/secrets/create',{name,kind,project:'Shared systems',value,confirm:'yes'})).status,303);
- const commit='c'.repeat(40);let compare='ahead',conclusion='success',version='v-old',uploads=[];const seen=[];
+ for(const [name,kind,value] of [['CLOUDFLARE_API_TOKEN','cloudflare-token',CF_TOKEN],['CLOUDFLARE_ACCOUNT_ID','cloudflare-account',ACCOUNT],['PZ_BUILD_MANIFEST','build-manifest',JSON.stringify(manifest)]])assert.equal((await post('/secrets/create',{name,kind,project:'Shared systems',value,confirm:'yes'})).status,303);
+ assert.match((await (await dash.fetch(new Request(D+'/secrets',{headers:{cookie:env.__cookie,accept:'text/html'}}),env,{})).text()),/Stored<\/span><span><code>CLOUDFLARE_API_TOKEN/);
+ const commit='c'.repeat(40);let compare='ahead',conclusion='success',version='v-old',tag='',uploads=[];const seen=[];
  const realFetch=globalThis.fetch;
  globalThis.fetch=async(input,init={})=>{const url=String(input?.url||input),method=init.method||'GET';seen.push(method+' '+url);const json=(x,status=200)=>new Response(JSON.stringify(x),{status,headers:{'content-type':'application/json'}});
   if(url.startsWith('https://api.cloudflare.com/'))assert.equal(init.headers.Authorization,'Bearer '+CF_TOKEN);
@@ -81,10 +83,11 @@ test('agent deploy action enforces merge, checks and drift gates and never expos
   if(url===`https://raw.githubusercontent.com/blarkin13/projectzero.work/${commit}/workers/portfolio-owner/worker.mjs`)return new Response(template);
   const base=`https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts/portfolio-owner`;
   if(url===base+'/content/v2')return new Response(live,{headers:{'content-type':'application/javascript+module'}});
-  if(url===base+'/settings')return json({success:true,result:{bindings:[{name:'PORTFOLIO',type:'d1'},{name:'VAULT_MASTER_KEY',type:'secret_text'}]}});
+  if(url===base+'/settings')return json({success:true,result:{bindings:[{name:'PORTFOLIO',type:'d1'},{name:'ACCOUNT_AUTH_DB',type:'d1',id:'auth-db'},{name:'VAULT_MASTER_KEY',type:'secret_text'}]}});
   if(url===base+'/schedules')return json({success:true,result:{schedules:[{cron:'*/15 * * * *'}]}});
+  if(url.startsWith(base+'/versions/'))return json({success:true,result:{id:url.split('/').pop(),annotations:tag?{'workers/tag':tag}:{}}});
   if(url===base+'/deployments'&&method==='GET')return json({success:true,result:{deployments:[{id:'dep',versions:[{version_id:version,percentage:100}]}]}});
-  if(url===base&&method==='PUT'){const form=init.body;uploads.push({metadata:JSON.parse(await form.get('metadata').text()),source:await form.get('worker.js').text()});live=uploads.at(-1).source;version='v-new';return json({success:true,result:{id:'portfolio-owner'}})}
+  if(url===base&&method==='PUT'){const form=init.body;uploads.push({metadata:JSON.parse(await form.get('metadata').text()),source:await form.get('worker.js').text()});live=uploads.at(-1).source;version='v-new';tag=uploads.at(-1).metadata.annotations['workers/tag'];return json({success:true,result:{id:'portfolio-owner'}})}
   throw Error('Unexpected fetch '+method+' '+url)};
  try{
   assert.equal((await agent({worker:'portfolio-owner',commit,mode:'deploy'},'ptk_'+'0'.repeat(64))).status,401);
@@ -92,15 +95,17 @@ test('agent deploy action enforces merge, checks and drift gates and never expos
   let r=await agent({worker:'portfolio-owner',commit,mode:'preflight'});let body=await r.json();
   assert.equal(r.status,200,JSON.stringify(body));assert.equal(body.change,'source change');assert.equal(body.previous_version,'v-old');assert.equal(uploads.length,0);
   r=await agent({worker:'portfolio-owner',commit,mode:'deploy'});body=await r.json();assert.equal(r.status,200,JSON.stringify(body));
-  assert.equal(body.new_version,'v-new');assert.deepEqual(body.rollback,{mode:'rollback',worker:'portfolio-owner',version_id:'v-old'});assert.equal(body.manifest_updated,true);
-  assert.equal(uploads.length,1);assert.deepEqual(uploads[0].metadata.keep_bindings,['secret_text','secret_key']);assert.ok(uploads[0].metadata.bindings.every(b=>b.type!=='secret_text'));
+  assert.equal(body.new_version,'v-new');assert.deepEqual(body.rollback,{mode:'rollback',worker:'portfolio-owner',version_id:'v-old'});assert.equal(body.baseline,'manifest source_sha256');assert.equal(uploads[0].metadata.annotations['workers/tag'],commit);
+  assert.equal(uploads.length,1);assert.deepEqual(uploads[0].metadata.keep_bindings,['secret_text','secret_key']);assert.ok(uploads[0].metadata.bindings.every(b=>b.type!=='secret_text'));assert.deepEqual(uploads[0].metadata.bindings.find(b=>b.name==='ACCOUNT_AUTH_DB'),{name:'ACCOUNT_AUTH_DB',type:'d1',id:'auth-db'});assert.match(body.bindings,/kept from production .*ACCOUNT_AUTH_DB:d1/);
   assert.doesNotMatch(uploads[0].source,/__PZ_CONFIG_\d{3}__/);assert.ok(uploads[0].source.includes('https://cfg0.example'));
-  // The stored manifest now tracks the new live source, so the next release passes drift checks.
-  r=await agent({worker:'portfolio-owner',commit,mode:'preflight'});body=await r.json();assert.equal(r.status,200,JSON.stringify(body));assert.equal(body.change,'no-op');
+  // The release is tagged with its commit, so the next preflight passes without any change to the stored manifest.
+  const storedBefore=state.prepare("SELECT revision FROM vault_secrets WHERE name='PZ_BUILD_MANIFEST'").get().revision;
+  r=await agent({worker:'portfolio-owner',commit,mode:'preflight'});body=await r.json();assert.equal(r.status,200,JSON.stringify(body));assert.equal(body.change,'no-op');assert.equal(body.baseline,'tagged commit '+commit.slice(0,12));
+  assert.equal(state.prepare("SELECT revision FROM vault_secrets WHERE name='PZ_BUILD_MANIFEST'").get().revision,storedBefore);
   // Gates: unmerged commit, failing checks and unexplained production drift are refused and audited.
   compare='diverged';r=await agent({worker:'portfolio-owner',commit,mode:'deploy'});assert.equal(r.status,409);assert.match((await r.json()).error,/not on main/);compare='ahead';
   conclusion='failure';r=await agent({worker:'portfolio-owner',commit,mode:'deploy'});assert.equal(r.status,409);assert.match((await r.json()).error,/Checks/);conclusion='success';
-  live='// hotfix deployed outside the release process';r=await agent({worker:'portfolio-owner',commit,mode:'deploy'});assert.equal(r.status,409);assert.match((await r.json()).error,/Production source differs/);
+  live='// hotfix deployed outside the release process';r=await agent({worker:'portfolio-owner',commit,mode:'deploy'});assert.equal(r.status,409);assert.match((await r.json()).error,/differs from its tagged commit/);
   assert.equal(uploads.length,1);
   const audit=state.prepare('SELECT action,actor,detail FROM vault_audit').all();
   assert.ok(audit.some(a=>a.action==='Deploy'&&a.actor==='Claude'&&/v-old → v-new/.test(a.detail)));assert.equal(audit.filter(a=>a.action==='Denied').length,3);
