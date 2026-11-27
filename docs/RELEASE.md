@@ -35,7 +35,7 @@ CI only runs source checks. Production deployment is deliberately not automatic.
 
 1. Run with `mode=preflight` first. It runs source checks and tests, builds, observes production and reports the plan without changing anything.
 2. Run with `mode=deploy`. Optional `migration` applies one additive file under `schema/migrations/` (header `-- D1 binding: worker/BINDING`; only `CREATE TABLE/INDEX IF NOT EXISTS` statements are accepted) to the D1 database bound to that Worker, before the upload.
-3. Each release is tagged with its commit (`workers/tag`). The next release rebuilds that commit and requires an exact match with live source, so out-of-band changes are refused. Untagged releases must match the manifest's `source_sha256`.
+3. Each release is tagged with its commit (`workers/tag`). The next release rebuilds that commit and requires an exact match with live source, so out-of-band changes are refused. Untagged releases must match the manifest's `source_sha256` or rebuild exactly from one of the last 30 commits of that Worker (so a stale manifest is not a blocker, but unknown changes are).
 4. Bindings (by name and type), required secret names and cron schedules must match the manifest. Existing Worker secrets are kept (`keep_bindings`). `VAULT_MASTER_KEY` is added only when the Worker does not already have it and is never overwritten.
 5. The job prints the previous version. To revert, run `mode=rollback` with that `version_id`.
 

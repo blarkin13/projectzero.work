@@ -41,8 +41,11 @@ test('preflight changes nothing; deploy uploads with kept secrets, tags the comm
  assert.equal(again.baseline,'tagged commit '+commit.slice(0,12));assert.equal(again.change,'no-op');assert.equal(again.vault_master_key,'already set (never overwritten)');assert.equal(st2.puts.length,0);
 });
 test('release refuses drift, split traffic, binding/schedule changes and destructive migrations',async()=>{
- const run=async(w,extra={},gitShow)=>release(base(extra),{token:TOKEN,account:ACCOUNT,fetch:w.fetch,gitShow});
- await assert.rejects(run(world({live:'// hotfix'})),/differs from the manifest baseline/);
+ const run=async(w,extra={},gitShow)=>release(base(extra),{token:TOKEN,account:ACCOUNT,fetch:w.fetch,gitShow,gitLog:()=>['d'.repeat(40)]});
+ await assert.rejects(run(world({live:'// hotfix'}),{},()=>'// other'),/matches neither the manifest baseline/);
+ // A stale manifest is fine when a recent commit rebuilds exactly to the untagged live source.
+ const ok=await release(base(),{token:TOKEN,account:ACCOUNT,fetch:world({live:'// v2 https://private.example'}).fetch,gitLog:()=>['b'.repeat(40),'c'.repeat(40)],gitShow:rev=>rev[0]==='c'?'// v2 __PZ_CONFIG_001__':'// v3 __PZ_CONFIG_001__'});
+ assert.equal(ok.baseline,'untagged; matches commit '+'c'.repeat(12));
  await assert.rejects(run(world({live:'// hotfix',tag:commit}),{},()=>'// other'),/differs from its tagged commit/);
  await assert.rejects(run(world({versions:[{version_id:'11111111-1111-4111-8111-111111111111',percentage:50},{version_id:'x',percentage:50}]})),/one active version at 100%/);
  await assert.rejects(run(world({bindings:[{name:'OWNER_EMAIL',type:'secret_text'}]})),/bindings differ/);
