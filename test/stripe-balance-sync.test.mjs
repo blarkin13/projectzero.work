@@ -15,29 +15,30 @@ function fixture(respond,missing=[]){
  }};
  for(const [i,name] of names.entries()){if(!missing.includes(i))env['PZ_STRIPE_'+name+'_READ']=JSON.stringify({account_id:'acct_'+ids[i],api_key:['rk','live',ids[i]].join('_')})}
  const request=async(url,opts)=>{const u=new URL(url),id=opts.headers.Authorization.split('_').at(-1);assert.equal(u.origin,'https://api.stripe.com');assert.equal(opts.method,'GET');calls.push([id,u.pathname,u.searchParams.get('starting_after')]);if(u.pathname==='/v1/account')return Response.json({id:'acct_'+id});assert.equal(u.pathname,'/v1/balance_transactions');assert.equal(u.searchParams.get('limit'),'100');return Response.json(respond(id,u.searchParams.get('starting_after')))};
+ const loadConfigs=async()=>names.map(n=>{try{return JSON.parse(env['PZ_STRIPE_'+n+'_READ'])}catch{return null}});
  const read=month=>JSON.parse(objects.get('finance/stripe-balance-v1/'+month+'.json').body);
- return {env,request,objects,calls,writes,read};
+ return {env,request,objects,calls,writes,read,loadConfigs};
 }
 test('native sync filters cutoff, separates currency and reporting category, and validates readback',async()=>{
  const f=fixture((id,cursor)=>id!=='apt'?{data:[],has_more:false}:cursor?{data:[row('old',sec('2026-10-31T00:00:00Z'))],has_more:true}:{data:[row('future',sec('2026-11-28T00:00:00Z')),row('boundary',sec(cutoff.toISOString())),row('a'),row('b',undefined,{currency:'jpy'}),row('c',undefined,{reporting_category:'payout',amount:-100,fee:0,net:-100})],has_more:true});
- assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request),['complete']);
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request,f.loadConfigs),['complete']);
  const s=f.read('2026-11');assert.equal(s.range_end,cutoff.toISOString());assert.equal(s.accounts[0].count,3);
  assert.deepEqual(s.accounts[0].groups.map(g=>[g.currency,g.type,g.count]),[['jpy','charge',1],['usd','charge',1],['usd','payout',1]]);
  assert.equal(s.accounts[1].count,0);assert.equal(s.accounts[1].complete,true);
  assert(!JSON.stringify(s).includes('boundary'));assert(!JSON.stringify(s).includes('acct_'));
- assert.deepEqual(await stripeRefresh(f.env,new Date('2026-11-27T12:00:00Z'),f.request),['unchanged']);
+ assert.deepEqual(await stripeRefresh(f.env,new Date('2026-11-27T12:00:00Z'),f.request,f.loadConfigs),['unchanged']);
  assert.equal(f.writes.length,1);
 });
 test('missing, duplicate, invalid, and truncated accounts are incomplete',async()=>{
  let i=0;const f=fixture((id,cursor)=>id==='apt'?{data:[row('repeat')],has_more:true}:id==='hum'?{data:[row('invalid',undefined,{currency:'zzz'})],has_more:false}:id==='yarr'?{data:[row('page'+(++i))],has_more:true}:{data:[],has_more:false});
- assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request),['partial']);
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request,f.loadConfigs),['partial']);
  assert.deepEqual(f.read('2026-11').accounts.map(a=>[a.complete,a.count,a.groups.length]),[[false,null,0],[false,null,0],[false,null,0],[true,0,0]]);
  assert.equal(f.calls.filter(c=>c[0]==='yarr'&&c[1]==='/v1/balance_transactions').length,5);
- const absent=fixture(()=>{throw Error('must not read')},[0,1,2,3]);assert.deepEqual(await stripeRefresh(absent.env,cutoff,absent.request),['unavailable']);assert.equal(absent.writes.length,0);
+ const absent=fixture(()=>{throw Error('must not read')},[0,1,2,3]);assert.deepEqual(await stripeRefresh(absent.env,cutoff,absent.request,absent.loadConfigs),['unavailable']);assert.equal(absent.writes.length,0);
 });
 test('rollover uses exact UTC boundary with one bounded pass and no double counting',async()=>{
  const f=fixture(()=>({data:[row('new',sec('2026-12-01T00:00:00Z')),row('previous',sec('2026-11-30T23:59:59Z'))],has_more:false}));
- assert.deepEqual(await stripeRefresh(f.env,new Date('2026-12-02T00:00:00Z'),f.request),['complete','complete']);
+ assert.deepEqual(await stripeRefresh(f.env,new Date('2026-12-02T00:00:00Z'),f.request,f.loadConfigs),['complete','complete']);
  assert.equal(f.read('2026-11').range_end,'2026-12-01T00:00:00.000Z');
  assert.equal(f.read('2026-11').accounts[0].count,1);assert.equal(f.read('2026-12').accounts[0].count,1);
  assert.equal(f.calls.filter(c=>c[1]==='/v1/balance_transactions').length,4);
@@ -46,12 +47,12 @@ test('duplicate account pin or incorrect identity cannot sync',async()=>{
  const f=fixture(()=>({data:[],has_more:false}));
  f.env.PZ_STRIPE_HUM_READ=f.env.PZ_STRIPE_APT_READ;
  const request=(url,opts)=>url.endsWith('/account')?Response.json({id:'acct_wrong'}):f.request(url,opts);
- assert.deepEqual(await stripeRefresh(f.env,cutoff,request),['unavailable']);assert.equal(f.writes.length,0);
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,request,f.loadConfigs),['unavailable']);assert.equal(f.writes.length,0);
 });
 test('failed conditional write or readback produces a failure',async()=>{
  const f=fixture(()=>({data:[],has_more:false}));
- f.env.BRAND_FILES.put=async()=>null;assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request),['conflict']);
- f.env.BRAND_FILES.put=async()=>({etag:'test'});assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request),['failed']);
+ f.env.BRAND_FILES.put=async()=>null;assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request,f.loadConfigs),['conflict']);
+ f.env.BRAND_FILES.put=async()=>({etag:'test'});assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request,f.loadConfigs),['failed']);
 });
 test('manual sync requires owner authentication',async()=>{
  const f=fixture(()=>({data:[],has_more:false}));
