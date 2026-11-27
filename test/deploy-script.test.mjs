@@ -54,7 +54,7 @@ test('release refuses drift, split traffic, binding/schedule changes and destruc
  assert.equal(ok.baseline,'untagged; matches commit '+'c'.repeat(12));
  await assert.rejects(run(world({live:'// hotfix',tag:commit}),{},()=>'// other'),/differs from its tagged commit/);
  await assert.rejects(run(world({versions:[{version_id:'11111111-1111-4111-8111-111111111111',percentage:50},{version_id:'x',percentage:50}]})),/one active version at 100%/);
- await assert.rejects(run(world({bindings:[{name:'OWNER_EMAIL',type:'secret_text'},{name:'EXTRA',type:'kv_namespace'}]})),/only in production: EXTRA:kv_namespace; only in manifest: PORTFOLIO:d1/);
+ await assert.rejects(run(world({bindings:[{name:'PORTFOLIO',type:'kv_namespace',namespace_id:'n'},{name:'OWNER_EMAIL',type:'secret_text'}]})),/Binding type differs.*PORTFOLIO/);
  await assert.rejects(run(world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-1'}]})),/missing required secrets: OWNER_EMAIL/);
  await assert.rejects(run(world({crons:['0 * * * *']})),/cron schedules differ/);
  await assert.rejects(run(world(),{vaultKey:'short'}),/32 bytes/);
@@ -62,6 +62,12 @@ test('release refuses drift, split traffic, binding/schedule changes and destruc
  assert.throws(()=>parseMigration('CREATE TABLE IF NOT EXISTS x(a);'),/header/);
  assert.throws(()=>restore('__PZ_CONFIG_009__',{}),/Unresolved/);
  const w=world();await assert.rejects(run(w,{mode:'deploy',migration:{file:'m.sql',text:'-- D1 binding: projectzero-commercial/COMMERCIAL_DB\nCREATE TABLE IF NOT EXISTS t(a);'}}),/targets projectzero-commercial/);assert.equal(w.st.puts.length,0);
+});
+test('deploy keeps bindings that exist only in production',async()=>{
+ const {st,fetch}=world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-1'},{name:'ACCOUNT_AUTH_DB',type:'d1',id:'db-auth'},{name:'OWNER_EMAIL',type:'secret_text'}]});
+ const out=await release(base({mode:'deploy'}),{token:TOKEN,account:ACCOUNT,fetch});
+ assert.match(out.bindings,/kept from production .*ACCOUNT_AUTH_DB:d1/);
+ assert.deepEqual(st.puts[0].bindings.map(b=>b.name).sort(),['ACCOUNT_AUTH_DB','PORTFOLIO']);assert.equal(st.puts[0].bindings.find(b=>b.name==='ACCOUNT_AUTH_DB').id,'db-auth');
 });
 test('rollback restores a known version at 100%',async()=>{
  const {st,fetch}=world();const out=await release({...base(),mode:'rollback',versionId:'33333333-3333-4333-8333-333333333333'},{token:TOKEN,account:ACCOUNT,fetch});
