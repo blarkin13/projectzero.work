@@ -171,3 +171,19 @@ test('Google login manager is owner-only and imports only the reviewed project c
  assert.equal((await post(path,fields)).status,409);
  const html=(await get(path)).text;assert.match(html,/Credentials stored in Chamber/);assert.doesNotMatch(html,/synthetic-google-secret|synthetic-client-id/);
 });
+
+test('existing standard live keys only attempt exact pinned account verification; test keys are rejected',async()=>{
+ const {env,state,post}=await setup();
+ const key=prefix=>[prefix,'live','FakeExistingKey'].join('_');
+ // Simulate older generic encrypted entries, retaining the original workspace/id/kind (the vault AAD).
+ for(const [name,value] of [['apt',key('sk')],['hum',key('rk')],['yarr',['sk','test','FakeTestKey'].join('_')]]){
+  assert.equal((await post('/secrets/create',{name:'legacy-'+name,project:'Shared systems',kind:'stripe-key',value,confirm:'yes'})).status,303);
+  state.prepare('UPDATE vault_secrets SET name=? WHERE name=?').run('PZ_STRIPE_'+name.toUpperCase()+'_READ','legacy-'+name);
+ }
+ let writes=0;const calls=[],diagnostics=[];
+ env.BRAND_FILES={async get(){return null},async put(){writes++;throw Error('must not write')}};
+ const request=async(url,opts)=>{calls.push({url,method:opts.method,prefix:opts.headers.Authorization.startsWith('Bearer sk_')?'sk':'rk'});return Response.json({id:'acct_wrong'})};
+ assert.deepEqual(await stripeRefresh(env,new Date('2026-11-27T22:00:00Z'),request,undefined,diagnostics),['unavailable']);
+ assert.deepEqual(diagnostics,['account_mismatch','account_mismatch','credential_invalid','credential_invalid']);
+ assert.equal(calls.length,2);assert(calls.every(c=>c.method==='GET'&&c.url==='https://api.stripe.com/v1/account'));assert(calls.some(c=>c.prefix==='sk'));assert.equal(writes,0);
+});
