@@ -145,7 +145,11 @@ export async function release(opts, deps = {}) {
     if (!template) throw new ReleaseError('Configuration drift requires the current template to rebuild the candidate');
     candidate = restore(template, config.replacements);
   }
-  if (bindingSet(settings?.bindings) !== bindingSet(metadata.bindings)) throw new ReleaseError('Production bindings differ from the release manifest; reconcile before releasing');
+  if (bindingSet(settings?.bindings) !== bindingSet(metadata.bindings)) {
+    const live = new Set(JSON.parse(bindingSet(settings?.bindings))), want = new Set(JSON.parse(bindingSet(metadata.bindings)));
+    const onlyLive = [...live].filter(x => !want.has(x)), onlyManifest = [...want].filter(x => !live.has(x));
+    throw new ReleaseError('Production bindings differ from the release manifest (name:type only in production: '+(onlyLive.join(', ')||'none')+'; only in manifest: '+(onlyManifest.join(', ')||'none')+'); reconcile before releasing');
+  }
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
   const missing = (entry.required_secret_names||[]).filter(n => !liveSecrets.has(n));
   if (missing.length) throw new ReleaseError('Production is missing required secrets: '+missing.join(', '));
