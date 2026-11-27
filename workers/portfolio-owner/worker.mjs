@@ -323,6 +323,8 @@ const PX_CSS=".px-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)
 // Native Stripe balance snapshots. No payment writes and no transaction detail persistence.
 // Each named encrypted Chamber secret holds a restricted live key and the exact authorized account ID.
 const STRIPE_SOURCES=[['apt','SiteAPT','PZ_STRIPE_APT_READ'],['hum','Humperdinck','PZ_STRIPE_HUM_READ'],['yarr','Yarr','PZ_STRIPE_YARR_READ'],['owl','Story Owl','PZ_STRIPE_OWL_READ']];
+// SHA-256 pins of the four exact authorized live account identities, resolved via the Stripe connector. No account identifiers or credentials are persisted here.
+const STRIPE_LEGACY_PINS={"apt":"cb27e63e9594bf6bf448a3469637123ce5f86dd44793f427760bbbbbff31dce9","hum":"fda1ab40009511b10488094adb028a291c78f825269cceaae1cee02fdb0cfebc","yarr":"eb8bf1f73477250892bb5562997a7a365aa64d9b204aa15ff8cc4807af9738ea","owl":"14954ebc8d17b6abbc6ce8dc3d817f1acba9e9cf978a91a960c736fd35f12770"};
 const stripeChamberProject=spec=>spec[0]==='owl'?'The Story Owl':spec[1];
 const stripeChamberSpec=name=>STRIPE_SOURCES.find(s=>s[2]===name);
 // Existing owner entries may have been created under Shared systems before the reporting form was released.
@@ -333,7 +335,7 @@ async function stripeChamberConfigs(env){
  return Promise.all(STRIPE_SOURCES.map(async spec=>{
   try{
    const secret=await vaultUse(env,VAULT_WORKSPACE,key,spec[2],'Stripe sync','Read-only balance reporting',row=>stripeChamberMatch(row,spec));
-   return secret?stripeConfig(secret.value):null;
+   return secret?stripeConfig(secret.value)||stripeLegacyConfig(secret.value,spec):null;
   }catch{return null}
  }));
 }
@@ -348,6 +350,8 @@ const stripeType=t=>typeof t==='string'&&/^[a-z_]{1,80}$/.test(t);
 const stripeInteger=Number.isSafeInteger;
 const stripeIncomplete=([key,name])=>({key,name,complete:false,count:null,groups:[]});
 function stripeConfig(value){try{const c=JSON.parse(value);if(typeof c?.account_id!=='string'||!/^acct_[A-Za-z0-9]+$/.test(c.account_id)||typeof c.api_key!=='string'||!/^rk_live_[A-Za-z0-9]+$/.test(c.api_key))return null;return {account_id:c.account_id,api_key:c.api_key}}catch{return null}}
+// Earlier Chamber entries stored only a restricted live key. Verify the exact pinned identity before reading balance data.
+function stripeLegacyConfig(value,spec){const k=typeof value==='string'?value.trim():'';return /^rk_live_[A-Za-z0-9]+$/.test(k)&&STRIPE_LEGACY_PINS[spec[0]]?{account_hash:STRIPE_LEGACY_PINS[spec[0]],api_key:k}:null}
 function stripeRanges(cutoff){
  const month=cutoff.toISOString().slice(0,7),start=new Date(month+'-01T00:00:00.000Z');
  const out=[{month,start:start.toISOString(),end:cutoff.toISOString()}];
@@ -377,7 +381,7 @@ async function stripeReadAccount(spec,config,ranges,request,report=()=>{}){
  let stage='identity';
  try{
   const identity=await stripeGet(config,'account',request);
-  if(identity.id!==config.account_id) return failed('account_mismatch');
+  if(typeof identity.id!=='string'||!/^acct_[A-Za-z0-9]+$/.test(identity.id)||(config.account_hash?await vaultSha(identity.id)!==config.account_hash:identity.id!==config.account_id)) return failed('account_mismatch');
   stage='balance';
   let cursor='',oldest=Infinity,exhausted=false;const seen=new Set(),rows=[];
   const yearStart=Date.parse(ranges[0].start)/1000;
@@ -434,8 +438,8 @@ async function stripeWrite(bucket,snapshot){
 }
 export async function stripeRefresh(env,cutoff=new Date(),request=fetch,loadConfigs=stripeChamberConfigs,diagnostics=[]){
  const ranges=stripeRanges(cutoff),configs=await loadConfigs(env);
- const ids=configs.filter(Boolean).map(c=>c.account_id);
- const accounts=await Promise.all(STRIPE_SOURCES.map((s,i)=>stripeReadAccount(s,configs[i]&&ids.filter(id=>id===configs[i].account_id).length===1?configs[i]:null,ranges,request,reason=>{diagnostics[i]=reason})));
+ const ids=await Promise.all(configs.map(c=>c?(c.account_hash||vaultSha(c.account_id)):null));
+ const accounts=await Promise.all(STRIPE_SOURCES.map((s,i)=>stripeReadAccount(s,configs[i]&&ids[i]&&ids.filter(id=>id===ids[i]).length===1?configs[i]:null,ranges,request,reason=>{diagnostics[i]=reason})));
  const outcomes=[];
  for(let i=0;i<ranges.length;i++){const r=ranges[i],snapshot={schema:1,month:r.month,observed_at:cutoff.toISOString(),range_start:r.start,range_end:r.end,source:STRIPE_SNAPSHOT_SOURCE,accounts:accounts.map(a=>a[i])};
   try{outcomes.push(await stripeWrite(env.BRAND_FILES,snapshot))}catch{outcomes.push('failed')}

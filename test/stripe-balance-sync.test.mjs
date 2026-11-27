@@ -71,3 +71,12 @@ test('native read failure reports only allowlisted stages without exposing provi
  assert.deepEqual(await stripeRefresh(f.env,cutoff,request,f.loadConfigs,diagnostics),['unavailable']);
  assert.deepEqual(diagnostics,['identity_403','balance_401','account_mismatch','credential_invalid']);assert.equal(f.writes.length,0);
 });
+
+test('legacy restricted key verifies pinned account hash before listing balances',async()=>{
+ const f=fixture(()=>({data:[],has_more:false})),diagnostics=[];
+ const hash=async s=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s))),x=>x.toString(16).padStart(2,'0')).join('');
+ const configs=await f.loadConfigs();configs[0]={account_hash:await hash('acct_apt'),api_key:configs[0].api_key};configs[1]={account_hash:await hash('acct_wrong'),api_key:configs[1].api_key};
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,f.request,async()=>configs,diagnostics),['partial']);
+ assert.deepEqual(diagnostics,['complete','account_mismatch','complete','complete']);
+ assert.equal(f.calls.filter(c=>c[0]==='hum'&&c[1]==='/v1/balance_transactions').length,0);
+});
