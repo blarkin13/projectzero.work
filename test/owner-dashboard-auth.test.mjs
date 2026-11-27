@@ -31,6 +31,7 @@ test('owner Google session handoff, replay prevention, protected dashboard, and 
  assert.equal((await getStatus(cookie)).status,204);
  assert.equal((await getStatus('__Host-pz_dash='+token())).status,403);
  assert.equal((await dash.fetch(req(D+'/development',{method:'POST',headers:{cookie,origin:'https://evil.example'}}),de,{})).status,403);
+ const help=await dash.fetch(req(D+'/lifecycle?help=1',{headers:{cookie,accept:'text/html'}}),de,{});assert.equal(help.status,200);const helpHtml=await help.text();assert.match(helpHtml,/<footer class="pz-standard-footer"/);assert.match(helpHtml,/href="https:\/\/www\.projectzero\.work\/terms"/);assert.match(helpHtml,/href="https:\/\/guides\.projectzero\.work\/how-to"/);assert.equal((helpHtml.match(/<footer class="pz-standard-footer"/g)||[]).length,1);
  const logout=await dash.fetch(req(D+'/workspace-sign-out',{headers:{cookie}}),de,{});assert.equal(logout.status,303);
  assert.equal((await getStatus(cookie)).status,403);
  assert.equal((await account.fetch(req(A+'/auth/dashboard',{headers:{cookie:'__Host-pz_session='+session}}),ae)).headers.get('location'),'/auth/login');
