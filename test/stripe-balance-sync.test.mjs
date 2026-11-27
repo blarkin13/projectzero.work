@@ -80,3 +80,16 @@ test('legacy restricted key verifies pinned account hash before listing balances
  assert.deepEqual(diagnostics,['complete','account_mismatch','complete','complete']);
  assert.equal(f.calls.filter(c=>c[0]==='hum'&&c[1]==='/v1/balance_transactions').length,0);
 });
+
+test('read failures distinguish transport, HTTP upstream and invalid response without exposing data',async()=>{
+ const f=fixture(()=>({data:[],has_more:false})),diagnostics=[];
+ const request=async(url,opts)=>{const id=opts.headers.Authorization.split('_').at(-1);
+  if(id==='apt')throw Error('private upstream error');
+  if(id==='hum')return new Response('private body',{status:503});
+  if(id==='yarr')return new Response('private non-json response',{status:200});
+  if(id==='owl')return new Response('private body',{status:404});
+ };
+ assert.deepEqual(await stripeRefresh(f.env,cutoff,request,f.loadConfigs,diagnostics),['unavailable']);
+ assert.deepEqual(diagnostics,['identity_transport','identity_upstream','identity_invalid_json','identity_404']);
+ assert.equal(f.writes.length,0);
+});
