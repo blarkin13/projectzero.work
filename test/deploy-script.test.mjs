@@ -54,7 +54,7 @@ test('release refuses drift, split traffic, binding/schedule changes and destruc
  assert.equal(ok.baseline,'untagged; matches commit '+'c'.repeat(12));
  await assert.rejects(run(world({live:'// hotfix',tag:commit}),{},()=>'// other'),/differs from its tagged commit/);
  await assert.rejects(run(world({versions:[{version_id:'11111111-1111-4111-8111-111111111111',percentage:50},{version_id:'x',percentage:50}]})),/one active version at 100%/);
- await assert.rejects(run(world({bindings:[{name:'OWNER_EMAIL',type:'secret_text'}]})),/bindings differ/);
+ await assert.rejects(run(world({bindings:[{name:'OWNER_EMAIL',type:'secret_text'},{name:'EXTRA',type:'kv_namespace'}]})),/only in production: EXTRA:kv_namespace; only in manifest: PORTFOLIO:d1/);
  await assert.rejects(run(world({bindings:[{name:'PORTFOLIO',type:'d1',id:'db-1'}]})),/missing required secrets: OWNER_EMAIL/);
  await assert.rejects(run(world({crons:['0 * * * *']})),/cron schedules differ/);
  await assert.rejects(run(world(),{vaultKey:'short'}),/32 bytes/);
