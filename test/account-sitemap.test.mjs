@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import account from '../workers/projectzero-commercial/worker.mjs';
 import landing from '../workers/projectzero-landing/worker.mjs';
 import guides from '../workers/projectzero-guides/worker.mjs';
@@ -71,4 +72,11 @@ test('same standard footer on every public guide, home, demo, legal and account 
   assert.equal(normal(html),expected,url);assert.match(foot(html),/Analytics preferences/,url);
  }
  for(const target of [origin+'/?home=1',guideOrigin+'/',guideOrigin+'/how-to','https://dash.projectzero.work/',accountOrigin+'/',origin+'/privacy',origin+'/terms',origin+'/sitemap.xml','mailto:support@projectzero.work'])assert.ok(expected.includes('href="'+target+'"'),target);
+});
+
+test('footer CSS and markup contract cannot drift between Workers',()=>{
+ const workers=['projectzero-landing','projectzero-commercial','projectzero-guides','portfolio-owner'];
+ const helpers=workers.map(name=>readFileSync('workers/'+name+'/worker.mjs','utf8').split('\n').slice(0,3).join('\n'));
+ assert.match(helpers[0],/Shared Project Zero public footer contract/);
+ for(const helper of helpers)assert.equal(helper,helpers[0]);
 });
