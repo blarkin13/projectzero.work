@@ -46,7 +46,7 @@ async function publicSitemap(req,env){
   const rx=/<url><loc>(https:\/\/guides\.projectzero\.work\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)?)?)<\/loc>(?:<lastmod>\d{4}-\d{2}-\d{2}<\/lastmod>)?<\/url>/g;
   const matches=[...entries.matchAll(rx)],urls=matches.map(m=>m[1]);
   if(!urls.length||matches.map(m=>m[0]).join('')!==entries||new Set(urls).size!==urls.length||!urls.includes('https://guides.projectzero.work/')||!urls.includes('https://guides.projectzero.work/privacy'))throw Error('Invalid guide sitemap entries');
-  if(urls.some(v=>!/^https:\/\/guides\.projectzero\.work\/(?:|privacy|platforms|compare|methodology|tools|setups|(?:platforms|categories|compare|tools|setups)\/[a-z0-9-]+)$/.test(v)))throw Error('Unexpected guide route');
+  if(urls.some(v=>!/^https:\/\/guides\.projectzero\.work\/(?:|privacy|platforms|compare|methodology|tools|setups|how-to|(?:platforms|categories|compare|tools|setups|how-to)\/[a-z0-9-]+)$/.test(v)))throw Error('Unexpected guide route');
   return response(req,header+main+entries+'</urlset>','application/xml; charset=utf-8',200,'public, max-age=300, s-maxage=300');
  }catch{return response(req,'Sitemap temporarily unavailable. Please retry.','text/plain; charset=utf-8',503,'no-store')}
 }
