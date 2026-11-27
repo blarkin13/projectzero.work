@@ -63,6 +63,11 @@ test('Project Zero removes the overview button and exposes install and action ce
  assert.match(nav,/Alerts &amp; app/);
  assert.match(nav,/id="pz-install-direct"/);
  assert.match(nav,/href="\/actions">Open action center/);
+ const utility=nav.slice(nav.indexOf('utility-links'),nav.indexOf('</nav>'));
+ assert.doesNotMatch(utility,/Development tracker|dash\.cloudflare\.com|Public home/);
+ assert.ok(utility.indexOf('Alerts &amp; app')<utility.indexOf('href="/secrets"')&&utility.indexOf('href="/secrets"')<utility.indexOf('> Account</summary>'),'order: Alerts & app, Secrets, Account');
+ assert.match(utility,/class="pz-desktop-app pz-account"><summary>[\s\S]*Account<\/summary><div class="pz-desktop-app-panel">[\s\S]*href="\/workspace-sign-out">Sign out<\/a><\/div><\/details>/);
+ assert.equal((utility.match(/workspace-sign-out/g)||[]).length,1,'Sign out only inside Account');
  const mobile=src.slice(src.indexOf('function pzMobileNav('),src.indexOf('function pzMobileNav(')+3000);
  assert.match(mobile,/<h3>Alerts &amp; app<\/h3>/);
  assert.match(mobile,/id="pz-install"/);
