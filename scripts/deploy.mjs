@@ -20,6 +20,35 @@ export function restore(template, replacements) {
   return out;
 }
 
+// Recover each placeholder's value from live source built from this template. Returns null unless
+// every placeholder has one consistent value and rebuilding reproduces the live source exactly.
+export function deriveReplacements(template, live) {
+  const parts = template.split(/(__PZ_CONFIG_\d{3}__)/);
+  if (!live.startsWith(parts[0])) return null;
+  let budget = 100000;
+  const solve = (i, pos, values) => {
+    if (--budget < 0) return null;
+    if (i >= parts.length) return pos === live.length ? values : null;
+    const key = parts[i], lit = parts[i+1], last = i+2 >= parts.length;
+    if (key in values) {
+      const v = values[key];
+      if (!live.startsWith(v+lit, pos)) return null;
+      if (last && pos+v.length+lit.length !== live.length) return null;
+      return solve(i+2, pos+v.length+lit.length, values);
+    }
+    if (last) { if (!live.endsWith(lit) || live.length-lit.length < pos) return null; return solve(i+2, live.length, {...values, [key]: live.slice(pos, live.length-lit.length)}); }
+    for (let at = live.indexOf(lit, pos); at >= 0; at = live.indexOf(lit, at+1)) {
+      const out = solve(i+2, at+lit.length, {...values, [key]: live.slice(pos, at)});
+      if (out) return out;
+      if (budget < 0) return null;
+    }
+    return null;
+  };
+  const values = solve(1, parts[0].length, {});
+  if (!values) return null;
+  try { return restore(template, values) === live ? values : null; } catch { return null; }
+}
+
 // Only additive, idempotent statements may be applied automatically.
 export function parseMigration(text) {
   const header = text.match(/^--\s*D1 binding:\s*([a-z0-9-]+)\/([A-Z0-9_]+)\s*$/m);
@@ -57,7 +86,8 @@ export function cloudflare({token, account, fetchImpl = fetch}) {
 }
 
 export async function release(opts, deps = {}) {
-  const {worker, mode, manifest, candidate, metadata, commit, versionId, migration, vaultKey, runId} = opts;
+  const {worker, mode, manifest, metadata, commit, versionId, migration, vaultKey, runId, template} = opts;
+  let {candidate} = opts;
   const log = deps.log || (() => {});
   const gitShow = deps.gitShow || ((rev, path) => execFileSync('git', ['show', rev+':'+path], {encoding: 'utf8', maxBuffer: 20e6}));
   const gitLog = deps.gitLog || (path => execFileSync('git', ['log', '--format=%H', '-n', '30', 'HEAD', '--', path], {encoding: 'utf8'}).split('\n').filter(Boolean));
@@ -84,20 +114,36 @@ export async function release(opts, deps = {}) {
   // require an exact match. Untagged (pre-workflow) releases must match the manifest's recorded hash.
   const detail = await cf.call(s+'/versions/'+liveVersion);
   const tag = detail?.annotations?.['workers/tag'] || detail?.metadata?.annotations?.['workers/tag'] || '';
-  let baseline;
+  // A commit matches when its build with the manifest values is byte-identical to live, or when live is
+  // exactly that commit with different configuration values (a stale manifest). In the second case the
+  // live values are kept so a release never silently reverts production configuration.
+  const path = 'workers/'+worker+'/worker.mjs';
+  const matchCommit = rev => {
+    let tpl; try { tpl = gitShow(rev, path); } catch { return null; }
+    try { if (sha(restore(tpl, entry.replacements)) === liveSha) return {replacements: entry.replacements, drift: []}; } catch {}
+    // Live is the commit's unconfigured template (deployed without the manifest): the release restores configuration.
+    if (sha(tpl) === liveSha) return {replacements: entry.replacements, drift: [], unconfigured: [...new Set(tpl.match(/__PZ_CONFIG_\d{3}__/g)||[])].length};
+    const derived = deriveReplacements(tpl, source);
+    if (!derived) return null;
+    return {replacements: {...entry.replacements, ...derived}, drift: Object.keys(derived).filter(k => derived[k] !== entry.replacements[k]).sort()};
+  };
+  let baseline, config = {replacements: entry.replacements, drift: []};
   if (/^[0-9a-f]{40}$/.test(tag)) {
-    let expected; try { expected = restore(gitShow(tag, 'workers/'+worker+'/worker.mjs'), entry.replacements); } catch (e) { throw new ReleaseError('Live version is tagged '+tag.slice(0,12)+' but that build could not be reproduced: '+e.message); }
-    if (sha(expected) !== liveSha) throw new ReleaseError('Production source differs from its tagged commit '+tag.slice(0,12)+'; reconcile before releasing');
-    baseline = 'tagged commit '+tag.slice(0,12);
+    const m = matchCommit(tag);
+    if (!m) throw new ReleaseError('Production source differs from its tagged commit '+tag.slice(0,12)+'; reconcile before releasing');
+    baseline = 'tagged commit '+tag.slice(0,12); config = m;
   } else if (liveSha === entry.source_sha256) {
     baseline = 'manifest source_sha256';
   } else {
-    // Untagged release made outside this workflow: accept it only if some recent commit of this
-    // Worker rebuilds (with the current manifest) to exactly the live source.
-    const path = 'workers/'+worker+'/worker.mjs';
-    const match = gitLog(path).find(rev => { try { return sha(restore(gitShow(rev, path), entry.replacements)) === liveSha; } catch { return false; } });
-    if (!match) throw new ReleaseError('Production source ('+liveSha.slice(0,12)+') matches neither the manifest baseline nor any of the last 30 commits of '+path+'; reconcile before releasing');
-    baseline = 'untagged; matches commit '+match.slice(0,12);
+    // Untagged release made outside this workflow: accept it only if it is exactly a recent commit.
+    let match = null, m = null;
+    for (const rev of gitLog(path)) { m = matchCommit(rev); if (m) { match = rev; break; } }
+    if (!match) throw new ReleaseError('Production source ('+liveSha.slice(0,12)+') matches none of the last 30 commits of '+path+', even allowing for configuration values; reconcile before releasing');
+    baseline = 'untagged; matches commit '+match.slice(0,12); config = m;
+  }
+  if (config.drift.length && !config.unconfigured) {
+    if (!template) throw new ReleaseError('Configuration drift requires the current template to rebuild the candidate');
+    candidate = restore(template, config.replacements);
   }
   if (bindingSet(settings?.bindings) !== bindingSet(metadata.bindings)) throw new ReleaseError('Production bindings differ from the release manifest; reconcile before releasing');
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
@@ -116,7 +162,7 @@ export async function release(opts, deps = {}) {
   const addVault = worker === 'portfolio-owner' && !!vaultKey && !liveSecrets.has('VAULT_MASTER_KEY');
   if (vaultKey && !/^[A-Za-z0-9+/]{43}=$/.test(vaultKey)) throw new ReleaseError('VAULT_MASTER_KEY must be 32 bytes in base64 (openssl rand -base64 32)');
   const candidateSha = sha(candidate);
-  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
+  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', unconfigured_live: config.unconfigured ? 'production is running '+config.unconfigured+' unfilled __PZ_CONFIG__ placeholders; this release restores them from PZ_BUILD_MANIFEST' : 'no', config_drift: config.drift.length ? config.drift.join(', ')+' differ from PZ_BUILD_MANIFEST; live values kept — update the manifest' : 'none', vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
   log(plan);
   if (mode === 'preflight') return {...plan, status: 'preflight passed; nothing changed'};
 
@@ -146,7 +192,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (file && !/^schema\/migrations\/\d{3}-[a-z0-9-]+\.sql$/.test(file)) throw new ReleaseError('Migration must be a file under schema/migrations/');
     if (!WORKERS.includes(worker)) throw new ReleaseError('Unknown worker');
     const manifest = JSON.parse(readFileSync(arg('manifest'), 'utf8'));
-    const result = await release({worker, mode, manifest, candidate: mode === 'rollback' ? '' : readFileSync('dist/'+worker+'/worker.mjs', 'utf8'), metadata: mode === 'rollback' ? {} : JSON.parse(readFileSync('dist/'+worker+'/metadata.json', 'utf8')), commit: process.env.GITHUB_SHA, versionId: (process.env.VERSION_ID||'').trim(), migration: file ? {file, text: readFileSync(file, 'utf8')} : null, vaultKey: (process.env.VAULT_MASTER_KEY||'').trim(), runId: process.env.GITHUB_RUN_ID}, {token: process.env.CLOUDFLARE_API_TOKEN, account: process.env.CLOUDFLARE_ACCOUNT_ID, log: x => console.log(JSON.stringify(x, null, 2))});
+    const result = await release({worker, mode, manifest, candidate: mode === 'rollback' ? '' : readFileSync('dist/'+worker+'/worker.mjs', 'utf8'), metadata: mode === 'rollback' ? {} : JSON.parse(readFileSync('dist/'+worker+'/metadata.json', 'utf8')), template: readFileSync('workers/'+worker+'/worker.mjs', 'utf8'), commit: process.env.GITHUB_SHA, versionId: (process.env.VERSION_ID||'').trim(), migration: file ? {file, text: readFileSync(file, 'utf8')} : null, vaultKey: (process.env.VAULT_MASTER_KEY||'').trim(), runId: process.env.GITHUB_RUN_ID}, {token: process.env.CLOUDFLARE_API_TOKEN, account: process.env.CLOUDFLARE_ACCOUNT_ID, log: x => console.log(JSON.stringify(x, null, 2))});
     console.log(JSON.stringify(result, null, 2)); summary(result);
   } catch (e) {
     const msg = e instanceof ReleaseError ? e.message : 'Release failed: '+String(e?.message||e).slice(0,300);

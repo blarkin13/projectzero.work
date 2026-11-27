@@ -42,7 +42,13 @@ test('preflight changes nothing; deploy uploads with kept secrets, tags the comm
 });
 test('release refuses drift, split traffic, binding/schedule changes and destructive migrations',async()=>{
  const run=async(w,extra={},gitShow)=>release(base(extra),{token:TOKEN,account:ACCOUNT,fetch:w.fetch,gitShow,gitLog:()=>['d'.repeat(40)]});
- await assert.rejects(run(world({live:'// hotfix'}),{},()=>'// other'),/matches neither the manifest baseline/);
+ await assert.rejects(run(world({live:'// hotfix'}),{},()=>'// other'),/matches none of the last 30 commits/);
+ // Live deployed straight from the repo template (placeholders unfilled): accepted, and the release restores configuration.
+ const raw=await release(base(),{token:TOKEN,account:ACCOUNT,fetch:world({live:'// v2 __PZ_CONFIG_001__'}).fetch,gitLog:()=>['e'.repeat(40)],gitShow:()=>'// v2 __PZ_CONFIG_001__'});
+ assert.match(raw.unconfigured_live,/1 unfilled/);assert.equal(raw.change,'source change');
+ // Stale manifest values: live values are kept and the drifted keys are named (values never printed).
+ const drift=await release(base({template:'// v3 __PZ_CONFIG_001__'}),{token:TOKEN,account:ACCOUNT,fetch:world({live:'// v2 https://live.example'}).fetch,gitLog:()=>['f'.repeat(40)],gitShow:()=>'// v2 __PZ_CONFIG_001__'});
+ assert.match(drift.config_drift,/__PZ_CONFIG_001__ differ/);assert.equal(drift.candidate_sha256,sha('// v3 https://live.example'));assert.ok(!JSON.stringify(drift).includes('live.example'));
  // A stale manifest is fine when a recent commit rebuilds exactly to the untagged live source.
  const ok=await release(base(),{token:TOKEN,account:ACCOUNT,fetch:world({live:'// v2 https://private.example'}).fetch,gitLog:()=>['b'.repeat(40),'c'.repeat(40)],gitShow:rev=>rev[0]==='c'?'// v2 __PZ_CONFIG_001__':'// v3 __PZ_CONFIG_001__'});
  assert.equal(ok.baseline,'untagged; matches commit '+'c'.repeat(12));
