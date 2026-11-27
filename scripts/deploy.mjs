@@ -145,11 +145,15 @@ export async function release(opts, deps = {}) {
     if (!template) throw new ReleaseError('Configuration drift requires the current template to rebuild the candidate');
     candidate = restore(template, config.replacements);
   }
-  if (bindingSet(settings?.bindings) !== bindingSet(metadata.bindings)) {
-    const live = new Set(JSON.parse(bindingSet(settings?.bindings))), want = new Set(JSON.parse(bindingSet(metadata.bindings)));
-    const onlyLive = [...live].filter(x => !want.has(x)), onlyManifest = [...want].filter(x => !live.has(x));
-    throw new ReleaseError('Production bindings differ from the release manifest (name:type only in production: '+(onlyLive.join(', ')||'none')+'; only in manifest: '+(onlyManifest.join(', ')||'none')+'); reconcile before releasing');
-  }
+  // A release never removes a binding production already has: live-only (non-secret) bindings are carried
+  // over exactly as configured and reported so the manifest can be updated. Type changes are refused.
+  const liveBindings = (settings?.bindings||[]).filter(b => !SECRET_TYPES.includes(b.type));
+  const wantBindings = (metadata.bindings||[]).filter(b => !SECRET_TYPES.includes(b.type));
+  const typeClash = wantBindings.filter(w => liveBindings.some(l => l.name === w.name && l.type !== w.type)).map(w => w.name);
+  if (typeClash.length) throw new ReleaseError('Binding type differs between production and the release manifest: '+typeClash.join(', ')+'; reconcile before releasing');
+  const carried = liveBindings.filter(l => !wantBindings.some(w => w.name === l.name));
+  const added = wantBindings.filter(w => !liveBindings.some(l => l.name === w.name));
+  if (carried.some(b => !b.name || !b.type)) throw new ReleaseError('A live binding is missing its name or type; reconcile before releasing');
   const liveSecrets = new Set((settings?.bindings||[]).filter(b => SECRET_TYPES.includes(b.type)).map(b => b.name));
   const missing = (entry.required_secret_names||[]).filter(n => !liveSecrets.has(n));
   if (missing.length) throw new ReleaseError('Production is missing required secrets: '+missing.join(', '));
@@ -166,14 +170,14 @@ export async function release(opts, deps = {}) {
   const addVault = worker === 'portfolio-owner' && !!vaultKey && !liveSecrets.has('VAULT_MASTER_KEY');
   if (vaultKey && !/^[A-Za-z0-9+/]{43}=$/.test(vaultKey)) throw new ReleaseError('VAULT_MASTER_KEY must be 32 bytes in base64 (openssl rand -base64 32)');
   const candidateSha = sha(candidate);
-  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', unconfigured_live: config.unconfigured ? 'production is running '+config.unconfigured+' unfilled __PZ_CONFIG__ placeholders; this release restores them from PZ_BUILD_MANIFEST' : 'no', config_drift: config.drift.length ? config.drift.join(', ')+' differ from PZ_BUILD_MANIFEST; live values kept — update the manifest' : 'none', vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
+  const plan = {worker, mode, commit, baseline, previous_version: liveVersion, live_source_sha256: liveSha, candidate_sha256: candidateSha, change: candidateSha === liveSha ? 'no-op' : 'source change', migration: mig ? mig.file+' ('+mig.statements+' statements → '+mig.binding+')' : 'none', unconfigured_live: config.unconfigured ? 'production is running '+config.unconfigured+' unfilled __PZ_CONFIG__ placeholders; this release restores them from PZ_BUILD_MANIFEST' : 'no', config_drift: config.drift.length ? config.drift.join(', ')+' differ from PZ_BUILD_MANIFEST; live values kept — update the manifest' : 'none', bindings: (carried.length ? 'kept from production (add to PZ_BUILD_MANIFEST): '+carried.map(b => b.name+':'+b.type).join(', ') : 'match manifest')+(added.length ? '; new: '+added.map(b => b.name+':'+b.type).join(', ') : ''), vault_master_key: worker !== 'portfolio-owner' ? 'n/a' : liveSecrets.has('VAULT_MASTER_KEY') ? 'already set (never overwritten)' : vaultKey ? 'will be set' : 'not provided'};
   log(plan);
   if (mode === 'preflight') return {...plan, status: 'preflight passed; nothing changed'};
 
   if (mig) { await cf.call('/d1/database/'+mig.database_id+'/query', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({sql: mig.sql})}); log({migration_applied: mig.file}); }
   if (plan.change === 'no-op' && !addVault) return {...plan, status: 'no-op; already live'+(mig ? ' (migration applied)' : '')};
 
-  const bindings = (metadata.bindings||[]).filter(b => !SECRET_TYPES.includes(b.type));
+  const bindings = [...wantBindings, ...carried];
   if (addVault) bindings.push({type: 'secret_text', name: 'VAULT_MASTER_KEY', text: vaultKey});
   const upload = {...metadata, main_module: 'worker.js', bindings, keep_bindings: SECRET_TYPES, annotations: {'workers/tag': commit, 'workers/message': 'GitHub Actions release'+(runId ? ' run '+runId : '')}};
   const form = new FormData();
