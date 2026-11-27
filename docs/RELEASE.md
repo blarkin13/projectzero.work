@@ -28,3 +28,15 @@ Use an approved Cloudflare deployment identity with scoped permissions. Verify t
 Validate the protected dashboard while authenticated, check anonymous access rejection, public demo and guides, and affected integration data. For a failed release use Cloudflare's supported version rollback to the recorded prior version, then reverify. Do not roll back a database migration without its separate recovery plan.
 
 CI only runs source checks. Production deployment is deliberately not automatic. The private build manifest and deployment credentials are not GitHub artifacts. No customer data, live database export or production secrets should be included in a release.
+
+## GitHub Actions release (Deploy Worker workflow)
+
+`.github/workflows/deploy.yml` runs the release above from `main` only, on demand (Actions › Deploy Worker › Run workflow, or the API). It uses repository secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `PZ_BUILD_MANIFEST` (raw or base64 JSON) and, optionally, `VAULT_MASTER_KEY`.
+
+1. Run with `mode=preflight` first. It runs source checks and tests, builds, observes production and reports the plan without changing anything.
+2. Run with `mode=deploy`. Optional `migration` applies one additive file under `schema/migrations/` (header `-- D1 binding: worker/BINDING`; only `CREATE TABLE/INDEX IF NOT EXISTS` statements are accepted) to the D1 database bound to that Worker, before the upload.
+3. Each release is tagged with its commit (`workers/tag`). The next release rebuilds that commit and requires an exact match with live source, so out-of-band changes are refused. Untagged releases must match the manifest's `source_sha256`.
+4. Bindings (by name and type), required secret names and cron schedules must match the manifest. Existing Worker secrets are kept (`keep_bindings`). `VAULT_MASTER_KEY` is added only when the Worker does not already have it and is never overwritten.
+5. The job prints the previous version. To revert, run `mode=rollback` with that `version_id`.
+
+Add required reviewers to the `production` environment in repository settings if every release should need owner approval.

@@ -1,3 +1,4 @@
+-- D1 binding: portfolio-owner/PORTFOLIO
 -- Target: owner PORTFOLIO D1 database (not the commercial database). Additive and idempotent.
 -- Chamber of Secrets (PZ-05): encrypted, workspace-scoped credentials, audit log and deploy locks.
 -- Only AES-GCM ciphertext is stored; the key lives in the VAULT_MASTER_KEY Worker secret.
