@@ -1,0 +1,9 @@
+-- D1 binding: portfolio-owner/PORTFOLIO
+-- Target: owner PORTFOLIO D1 database (not the commercial database). Additive and idempotent.
+-- Chamber of Secrets (PZ-05): encrypted, workspace-scoped credentials, audit log and deploy locks.
+-- Only AES-GCM ciphertext is stored; the key lives in the VAULT_MASTER_KEY Worker secret.
+CREATE TABLE IF NOT EXISTS vault_secrets(id TEXT PRIMARY KEY CHECK(length(id)=36),workspace_id TEXT NOT NULL CHECK(length(workspace_id) BETWEEN 1 AND 64),name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 80),project TEXT NOT NULL DEFAULT '' CHECK(length(project)<=80),kind TEXT NOT NULL CHECK(kind IN ('cloudflare-token','cloudflare-account','build-manifest','github-token','stripe-key','api-key','other')),ciphertext TEXT NOT NULL,iv TEXT NOT NULL,hint TEXT NOT NULL DEFAULT '' CHECK(length(hint)<=40),bytes INTEGER NOT NULL CHECK(bytes BETWEEN 0 AND 65536),status TEXT NOT NULL DEFAULT 'Active' CHECK(status IN ('Active','Revoked')),revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,revoked_at TEXT,last_used_at TEXT,last_used_by TEXT,CHECK(status='Revoked' OR (length(ciphertext)>0 AND length(iv)>0)));
+CREATE UNIQUE INDEX IF NOT EXISTS vault_secrets_active_name ON vault_secrets(workspace_id,name) WHERE status='Active';
+CREATE TABLE IF NOT EXISTS vault_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,workspace_id TEXT NOT NULL,secret_id TEXT NOT NULL DEFAULT '',secret_name TEXT NOT NULL DEFAULT '',action TEXT NOT NULL CHECK(action IN ('Created','Rotated','Revoked','Used','Updated','Preflight','Deploy','Rollback','Denied')),actor TEXT NOT NULL,at TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=500));
+CREATE INDEX IF NOT EXISTS vault_audit_recent ON vault_audit(workspace_id,at);
+CREATE TABLE IF NOT EXISTS vault_locks(name TEXT PRIMARY KEY,holder TEXT NOT NULL,expires_at TEXT NOT NULL);

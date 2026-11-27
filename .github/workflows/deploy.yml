@@ -1,0 +1,62 @@
+name: Deploy Worker
+# Manual, gated production release. Runs only from main. Start with mode=preflight (changes nothing).
+on:
+  workflow_dispatch:
+    inputs:
+      worker:
+        description: Worker to release
+        type: choice
+        options: [portfolio-owner, portfolio-tracker-api, portfolio-brand-edge, projectzero-commercial, projectzero-guides]
+        default: portfolio-owner
+      mode:
+        description: preflight (no changes), deploy, or rollback
+        type: choice
+        options: [preflight, deploy, rollback]
+        default: preflight
+      migration:
+        description: Optional additive migration to apply first, e.g. schema/migrations/006-secret-chamber.sql
+        type: string
+        required: false
+      version_id:
+        description: Version ID to restore (rollback only)
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ inputs.worker }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run check
+      - run: npm test
+      - name: Write private manifest
+        env:
+          PZ_BUILD_MANIFEST: ${{ secrets.PZ_BUILD_MANIFEST }}
+        run: node scripts/write-manifest.mjs "$RUNNER_TEMP/pz-manifest.json"
+      - name: Build
+        run: npm run build -- "$RUNNER_TEMP/pz-manifest.json"
+      - name: Release
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAULT_MASTER_KEY: ${{ secrets.VAULT_MASTER_KEY }}
+          WORKER: ${{ inputs.worker }}
+          MODE: ${{ inputs.mode }}
+          MIGRATION: ${{ inputs.migration }}
+          VERSION_ID: ${{ inputs.version_id }}
+        run: node scripts/deploy.mjs --manifest "$RUNNER_TEMP/pz-manifest.json"
+      - name: Remove private build files
+        if: always()
+        run: rm -rf dist "$RUNNER_TEMP/pz-manifest.json"
