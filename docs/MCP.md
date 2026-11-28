@@ -4,13 +4,13 @@ The owner Worker serves a private, stateless Streamable HTTP MCP endpoint at
 `https://dash.projectzero.work/mcp`. Supported handshake-era protocol revisions
 are 2025-11-25, 2025-06-18 and 2025-03-26. The endpoint supports initialize,
 notifications, ping, tools, resources and prompts over JSON-RPC. It does not
-implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and authorization-code + PKCE are provided for ChatGPT. MCP requests require an OAuth access token or a dedicated bearer token; browser cookies and query-string credentials are not accepted by the resource endpoint.
+implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and authorization-code + PKCE are provided for ChatGPT. Initialization and tool schemas are public discovery metadata only. All private data, resources and tool execution require an OAuth access token or a dedicated bearer token; browser cookies and query-string credentials are not accepted by the resource endpoint.
 
 ## Connect ChatGPT through OAuth
 
 1. In ChatGPT, open Settings → Plugins → Add custom MCP server.
-2. Name it Project.Zero.Work, enter `https://dash.projectzero.work/mcp`, and choose **OAuth**. Do not select no authentication.
-3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve. No token needs to be pasted.
+2. Name it Project.Zero.Work, enter `https://dash.projectzero.work/mcp`, and choose **OAuth or no authentication** (mixed discovery mode). Do not choose No authentication alone. Anonymous discovery reveals only static tool descriptors.
+3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted.
 4. Review or revoke the resulting connection in the [MCP manager](https://dash.projectzero.work/integrations/mcp). Actual tool availability also depends on the ChatGPT account/workspace and client.
 
 The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
@@ -65,5 +65,5 @@ and same-origin protections. Chamber access fails closed if audit storage fails.
 Apply additive migrations `schema/migrations/007-mcp-grants.sql` and `schema/migrations/008-mcp-connections.sql` and `schema/migrations/009-mcp-oauth.sql` to the
 portfolio-owner PORTFOLIO binding, then release only the portfolio-owner Worker
 through the existing approved release procedure. Do not change other Workers,
-routes, bindings or schedules. Verify the UI, anonymous 401, scoped discovery,
+routes, bindings or schedules. Verify the UI, anonymous metadata-only discovery and OAuth challenges, scoped discovery,
 revocation, and one read-only authorized call before enabling write scopes.

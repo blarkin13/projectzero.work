@@ -340,3 +340,30 @@ test('OAuth migration is additive and repeatable',()=>{
  const sql=readFileSync('schema/migrations/009-mcp-oauth.sql','utf8');db.exec(sql);db.exec(sql);
  assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name IN ('mcp_oauth_clients','mcp_oauth_requests','mcp_oauth_sessions','mcp_connections')").get().n,4);
 });
+
+test('mixed-auth MCP discovery exposes only public static metadata and all tools challenge for OAuth',async()=>{
+ const {env,state,post}=await setup();
+ assert.equal((await post('/secrets/create',{name:'private-testing-secret',kind:'cloudflare-token',project:'Shared systems',value:CF_TOKEN,confirm:'yes'})).status,303);
+ const call=(method,params={},headers={})=>dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{});
+ const init=await call('initialize',{protocolVersion:'2025-11-25'},{Origin:'https://chatgpt.com'});assert.equal(init.status,200);assert.equal((await init.json()).result.protocolVersion,'2025-11-25');
+ // Discovery also succeeds without any database bindings.
+ const anonymous=await dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})}),{},{});
+ const list=await anonymous.json();assert.equal(anonymous.status,200);assert.equal(list.result.tools.length,13);
+ for(const t of list.result.tools){assert.deepEqual(t.securitySchemes,[{type:'oauth2',scopes:['projectzero']}]);assert.deepEqual(t._meta.securitySchemes,t.securitySchemes)}
+ assert.doesNotMatch(JSON.stringify(list),/private-testing-secret/);
+ assert.deepEqual((await (await call('resources/list')).json()).result.resources,[]);
+ assert.deepEqual((await (await call('prompts/list')).json()).result.prompts,[]);
+ assert.equal((await call('resources/read',{uri:'projectzero://projects'})).status,401);
+ assert.equal((await call('prompts/get',{name:'next_priority'})).status,401);
+ const before=state.prepare('SELECT COUNT(*) n FROM vault_audit').get().n;
+ const real=globalThis.fetch;globalThis.fetch=async()=>{throw Error('Anonymous discovery must not call a provider')};
+ try{for(const t of list.result.tools){
+  const res=await call('tools/call',{name:t.name,arguments:{}});const body=await res.json();
+  assert.equal(body.result.isError,true);assert.match(body.result._meta['mcp/www_authenticate'][0],/resource_metadata=/);
+  assert.doesNotMatch(JSON.stringify(body),/private-testing-secret/);
+ }}finally{globalThis.fetch=real}
+ assert.equal(state.prepare('SELECT COUNT(*) n FROM vault_audit').get().n,before);
+ assert.equal((await call('tools/list',{}, {Authorization:'Bearer expired'})).status,401);
+ assert.equal((await call('initialize',{}, {Origin:'https://evil.example'})).status,403);
+ assert.equal((await call('tools/list',{}, {Cookie:env.__cookie})).status,200);
+});
