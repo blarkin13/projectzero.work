@@ -1164,18 +1164,19 @@ async function mcpAuthenticate(req,env){
  return {agent:{id:row.id,actor:agent.actor},scopes:JSON.parse(row.scopes),authorization,dedicated:true};
 }
 const mcpResult=(data,isError=false)=>({content:[{type:'text',text:JSON.stringify(data)}],...(isError?{isError:true}:{})});
-async function mcpTracker(req,name,args,authorization){
+async function mcpTracker(env,name,args,authorization){
  const task=args.task_id?'/tasks/'+args.task_id:'';
  const routes={get_instructions:'/instructions',list_projects:'/projects',list_tasks:'/tasks',get_task:task,update_task:task,list_owner_actions:'/owner-actions',get_owner_action:task+'/owner-action',update_owner_action:task+'/owner-action'};
  const url=new URL('https://portfolio-tracker-api.larki-brian.workers.dev/v1'+routes[name]);
  const write=name.startsWith('update_'),{task_id,...body}=args;
  if(name==='list_tasks')for(const [k,v] of Object.entries(args))url.searchParams.set(k,String(v));
- const res=await fetch(url,{method:write?'PATCH':'GET',redirect:'error',headers:{Authorization:authorization,Accept:'application/json',...(write?{'Content-Type':'application/json'}:{})},...(write?{body:JSON.stringify(body)}:{})});
+ if(!env.TRACKER_API?.fetch)return mcpResult({error:'Tracker service binding unavailable'},true);
+ let res;try{res=await env.TRACKER_API.fetch(new Request(url,{method:write?'PATCH':'GET',redirect:'error',headers:{Authorization:authorization,Accept:'application/json',...(write?{'Content-Type':'application/json'}:{})},...(write?{body:JSON.stringify(body)}:{})}))}catch{console.warn('MCP tracker service call failed');return mcpResult({error:'Tracker service unavailable'},true)}
  if(!res.ok){await res.body?.cancel();return mcpResult({error:'Tracker request failed',status:res.status},true)}
  const data=await res.json();return mcpResult(data);
 }
 async function mcpRun(req,env,agent,tool,args,authorization){
- if(tool.scope.startsWith('tracker.'))return mcpTracker(req,tool.name,args,authorization);
+ if(tool.scope.startsWith('tracker.'))return mcpTracker(env,tool.name,args,authorization);
  if(!await vaultAudit(env,VAULT_WORKSPACE,null,'Used',agent.actor,'MCP '+tool.name))return mcpResult({error:'Chamber audit unavailable'},true);
  if(tool.name==='chamber_status'){
   const rows=await env.PORTFOLIO.prepare('SELECT name,project,kind,status,revision FROM vault_secrets WHERE workspace_id=? ORDER BY name LIMIT 200').bind(VAULT_WORKSPACE).all();
@@ -1234,7 +1235,7 @@ async function mcpRoute(req,env){
   if(p.method==='resources/read'){
    const names={'projectzero://instructions':'get_instructions','projectzero://projects':'list_projects'},uri=p.params?.uri;
    if(!scopes.includes('tracker.read')||!Object.hasOwn(names,uri))return error(id,-32602,'Unknown resource');
-   const r=await mcpTracker(req,names[uri],{},authorization);if(r.isError)return error(id,-32000,'Resource unavailable');
+   const r=await mcpTracker(env,names[uri],{},authorization);if(r.isError)return error(id,-32000,'Resource unavailable');
    return rpc(id,{contents:[{uri,mimeType:'application/json',text:r.content[0].text}]});
   }
   if(p.method==='prompts/list')return rpc(id,{prompts:scopes.includes('tracker.read')?[{name:'next_priority',description:'Pick the next eligible priority task and follow the authoritative tracker.'}]:[]});

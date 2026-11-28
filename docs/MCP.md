@@ -39,7 +39,7 @@ header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted
 | deploy.write | release_deploy, release_rollback |
 | stripe.refresh | refresh_stripe_reports (private aggregate snapshots, status only) |
 
-Dedicated MCP-only tokens are hashed, and their backing tracker tokens are encrypted with the Chamber master key. Tracker calls use the original authenticated tracker API, including revision
+Dedicated MCP-only tokens are hashed, and their backing tracker tokens are encrypted with the Chamber master key. Tracker calls use the original authenticated tracker API through the pinned TRACKER_API Worker service binding, including revision
 checks and audit trail. The underlying tracker key retains its existing direct
 API permissions; MCP grants govern the new endpoint only. Existing direct agent
 deployment permissions are unchanged. Deployment still checks merge ancestry,
