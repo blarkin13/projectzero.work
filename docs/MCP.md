@@ -9,15 +9,14 @@ Clients must support a custom Authorization header. No browser cookies or
 query-string credentials are accepted.
 
 ## Connect an assistant
-1. Sign in to the dashboard as the owner and open Development → integration,
-   or Chamber of Secrets → MCP integration.
-2. Create a separate private tracker key for each assistant (shown once).
-3. At /integrations/mcp, grant specific capabilities to the key and confirm.
-   A key without grants cannot use MCP. Unchecking all scopes disables MCP;
-   revoking or expiring the underlying key disables both the tracker API and MCP.
-4. Configure a Streamable HTTP MCP client with the above URL and
-   `Authorization: Bearer <private-assistant-key>`. Store the key in the client's
-   secret store, not its source, shared prompts or a public configuration.
+1. Sign in to the dashboard as the owner and open [MCP integration](https://dash.projectzero.work/integrations/mcp).
+2. Choose **Add connection**, enter a name and select the assistant and permissions. Read-only access is selected by default.
+3. Create the connection and save its MCP-only token (shown once). The token has no direct tracker API or agent deployment access. Its backing tracker key is encrypted internally and never displayed.
+4. Configure a Streamable HTTP MCP client with the server URL and
+   `Authorization: Bearer <private-MCP-token>`. Store the token in the client's secret store, not its source, shared prompts or a public configuration.
+5. Use the connection manager to review last use, change permissions, disable all scopes, or revoke the connection. Revocation also revokes the backing tracker key. Tokens expire after 90 days.
+
+Legacy tracker keys can be managed in the collapsed Existing tracker keys section; those keys retain their original direct API privileges. Prefer dedicated MCP-only connections for new clients.
 
 For a client accepting a server URL and custom HTTP headers, use the URL and
 header above. OAuth-only clients (including hosted connector interfaces that
@@ -35,7 +34,7 @@ does not claim compatibility with those interfaces.
 | deploy.write | release_deploy, release_rollback |
 | stripe.refresh | refresh_stripe_reports (private aggregate snapshots, status only) |
 
-Tracker calls use the original authenticated tracker API, including revision
+Dedicated MCP-only tokens are hashed, and their backing tracker tokens are encrypted with the Chamber master key. Tracker calls use the original authenticated tracker API, including revision
 checks and audit trail. The underlying tracker key retains its existing direct
 API permissions; MCP grants govern the new endpoint only. Existing direct agent
 deployment permissions are unchanged. Deployment still checks merge ancestry,
@@ -58,7 +57,7 @@ and same-origin protections. Chamber access fails closed if audit storage fails.
 
 ## Release
 
-Apply additive migration `schema/migrations/007-mcp-grants.sql` to the
+Apply additive migrations `schema/migrations/007-mcp-grants.sql` and `schema/migrations/008-mcp-connections.sql` to the
 portfolio-owner PORTFOLIO binding, then release only the portfolio-owner Worker
 through the existing approved release procedure. Do not change other Workers,
 routes, bindings or schedules. Verify the UI, anonymous 401, scoped discovery,

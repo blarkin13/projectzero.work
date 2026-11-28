@@ -42,3 +42,6 @@ CREATE TABLE IF NOT EXISTS vault_locks(name TEXT PRIMARY KEY,holder TEXT NOT NUL
 -- Additive, idempotent owner-controlled MCP grants.
 CREATE TABLE IF NOT EXISTS mcp_grants(key_id TEXT PRIMARY KEY, scopes TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_rate(key_id TEXT NOT NULL, minute TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(key_id,minute));
+-- D1 binding: portfolio-owner/PORTFOLIO
+-- Dedicated MCP-only connections. Backing tracker keys are encrypted and never shown to clients.
+CREATE TABLE IF NOT EXISTS mcp_connections(id TEXT PRIMARY KEY,label TEXT NOT NULL,actor TEXT NOT NULL,token_hash TEXT NOT NULL UNIQUE,tracker_key_id TEXT NOT NULL UNIQUE,ciphertext TEXT NOT NULL,iv TEXT NOT NULL,scopes TEXT NOT NULL,created_at TEXT NOT NULL,expires_at TEXT NOT NULL,revoked_at TEXT,last_seen_at TEXT);

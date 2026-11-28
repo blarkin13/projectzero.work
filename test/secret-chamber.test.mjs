@@ -242,3 +242,45 @@ test('MCP tracker routes are fixed, enforce scope and forward revision-gated upd
   assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',status:'Done'}})).error.code,-32602);
  }finally{globalThis.fetch=real}
 });
+
+test('MCP connection manager creates dedicated scoped tokens, tracks use and revokes without exposing backing keys',async()=>{
+ const {env,state,tracker,get,post}=await setup();
+ const initial=await get('/integrations/mcp');
+ assert.equal(initial.status,200);assert.match(initial.text,/Add a connection/);assert.match(initial.text,/Client setup and compatibility/);assert.match(initial.text,/width:16px!important/);
+ assert.match(initial.text,/No dedicated MCP connections yet/);
+ const p={action:'create',actor:'Claude',label:'Development laptop',scope:'tracker.read',confirm:'yes'};
+ assert.equal((await post('/integrations/mcp',p,'https://evil.example')).status,403);
+ assert.equal((await post('/integrations/mcp',{...p,scope:'anything'})).status,400);
+ const created=await post('/integrations/mcp',p);assert.equal(created.status,200);assert.match(created.headers.get('cache-control'),/no-store/);
+ const html=await created.text(),key=html.match(/>(pzm_[0-9a-f]{64})<\/textarea>/)[1];
+ assert.match(html,/Connection created/);assert.doesNotMatch(html,/ptk_[0-9a-f]{64}/);
+ const row=state.prepare("SELECT * FROM mcp_connections").get();
+ assert.equal(row.token_hash,sha(key));assert.notEqual(row.ciphertext,key);assert.deepEqual(JSON.parse(row.scopes),['tracker.read']);
+ const subsequent=await get('/integrations/mcp');assert.match(subsequent.text,/Development laptop/);assert.doesNotMatch(subsequent.text,new RegExp(key));assert.doesNotMatch(subsequent.text,new RegExp(row.ciphertext));
+ const rpc=async(method,params={})=>dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{});
+ const direct=await dash.fetch(new Request(D+'/api/agent/deploy',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({worker:'portfolio-owner',mode:'preflight',commit:'c'.repeat(40)})}),env,{});
+ assert.equal(direct.status,401);
+ const listed=await (await rpc('tools/list')).json();assert.equal(listed.result.tools.length,6);
+ assert.ok(state.prepare('SELECT last_seen_at FROM mcp_connections').get().last_seen_at);
+ assert.equal((await (await rpc('tools/call',{name:'release_deploy',arguments:{worker:'portfolio-owner',commit:'c'.repeat(40),confirm:'deploy'}})).json()).error.code,-32602);
+ const real=globalThis.fetch;let backing;
+ globalThis.fetch=async(url,init)=>{assert.equal(String(url),'https://portfolio-tracker-api.larki-brian.workers.dev/v1/projects');backing=init.headers.Authorization.slice(7);return Response.json({projects:[]})};
+ try{assert.deepEqual(JSON.parse((await (await rpc('tools/call',{name:'list_projects',arguments:{}})).json()).result.content[0].text),{projects:[]})}finally{globalThis.fetch=real}
+ assert.match(backing,/^ptk_[0-9a-f]{64}$/);assert.notEqual(backing,key);
+ assert.equal(tracker.prepare('SELECT token_hash FROM tracker_api_keys WHERE id=?').get(row.tracker_key_id).token_hash,sha(backing));
+ assert.equal((await post('/integrations/mcp',{action:'legacy',id:row.tracker_key_id,scope:'deploy.write',confirm:'yes'})).status,409);
+ assert.equal((await post('/integrations/mcp',{action:'save',id:row.id,scope:'chamber.read',confirm:'yes'})).status,303);
+ assert.deepEqual((await (await rpc('tools/list')).json()).result.tools.map(x=>x.name),['chamber_status']);
+ assert.equal((await post('/integrations/mcp',{action:'revoke',id:row.id,confirm:'yes'})).status,303);
+ assert.equal((await rpc('tools/list')).status,401);
+ const revoked=state.prepare('SELECT revoked_at,ciphertext,iv FROM mcp_connections').get();assert.ok(revoked.revoked_at);assert.equal(revoked.ciphertext,'');assert.equal(revoked.iv,'');
+ assert.ok(tracker.prepare('SELECT revoked_at FROM tracker_api_keys WHERE id=?').get(row.tracker_key_id).revoked_at);
+});
+
+test('migration 008 is additive and idempotent',()=>{
+ const db=new DatabaseSync(':memory:');db.exec(readFileSync('schema/owner-state.sql','utf8'));
+ db.prepare('INSERT INTO mcp_grants VALUES(?,?,?)').run('old','["tracker.read"]','t');
+ const sql=readFileSync('schema/migrations/008-mcp-connections.sql','utf8');db.exec(sql);db.exec(sql);
+ assert.equal(db.prepare('SELECT scopes FROM mcp_grants WHERE key_id=?').get('old').scopes,'["tracker.read"]');
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM mcp_connections').get().n,0);
+});
