@@ -38,3 +38,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS vault_secrets_active_name ON vault_secrets(wor
 CREATE TABLE IF NOT EXISTS vault_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,workspace_id TEXT NOT NULL,secret_id TEXT NOT NULL DEFAULT '',secret_name TEXT NOT NULL DEFAULT '',action TEXT NOT NULL CHECK(action IN ('Created','Rotated','Revoked','Used','Updated','Preflight','Deploy','Rollback','Denied')),actor TEXT NOT NULL,at TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '' CHECK(length(detail)<=500));
 CREATE INDEX IF NOT EXISTS vault_audit_recent ON vault_audit(workspace_id,at);
 CREATE TABLE IF NOT EXISTS vault_locks(name TEXT PRIMARY KEY,holder TEXT NOT NULL,expires_at TEXT NOT NULL);
+-- D1 binding: portfolio-owner/PORTFOLIO
+-- Additive, idempotent owner-controlled MCP grants.
+CREATE TABLE IF NOT EXISTS mcp_grants(key_id TEXT PRIMARY KEY, scopes TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mcp_rate(key_id TEXT NOT NULL, minute TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(key_id,minute));

@@ -9,3 +9,5 @@ The five deployed Cloudflare Workers are reconciled under `workers/`. The public
 - Feature branches and pull requests run GitHub Actions source checks.
 - Build deployable modules using the authorized private configuration manifest: `npm run build -- /secure/local/manifest.json`.
 - See [release procedure](docs/RELEASE.md) for preflight, deployment verification, and rollback. Merging a PR does not deploy to production.
+
+- Remote assistant integration: [MCP setup and permissions](docs/MCP.md).

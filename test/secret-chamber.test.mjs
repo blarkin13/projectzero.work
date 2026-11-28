@@ -187,3 +187,58 @@ test('existing standard live keys only attempt exact pinned account verification
  assert.deepEqual(diagnostics,['account_mismatch','account_mismatch','credential_invalid','credential_invalid']);
  assert.equal(calls.length,2);assert(calls.every(c=>c.method==='GET'&&c.url==='https://api.stripe.com/v1/account'));assert(calls.some(c=>c.prefix==='sk'));assert.equal(writes,0);
 });
+
+test('MCP grants are owner-controlled, scoped, revocable and never reveal Chamber secrets',async()=>{
+ const {env,state,tracker,get,post,agentKey}=await setup();
+ const call=(method,params={},key=agentKey,headers={})=>dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json',...headers},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{});
+ assert.equal((await call('tools/list',{},'invalid')).status,401);
+ assert.equal((await call('tools/list')).status,403);
+ assert.equal((await dash.fetch(new Request(D+'/integrations/mcp',{headers:{accept:'application/json'}}),env,{})).status,403);
+ assert.equal((await get('/integrations/mcp')).status,200);
+ const fields={id:'k1',scope:'chamber.read',confirm:'yes'};
+ assert.equal((await post('/integrations/mcp',fields,'https://evil.example')).status,403);
+ assert.equal((await post('/integrations/mcp',{...fields,scope:'anything'})).status,400);
+ assert.equal((await post('/integrations/mcp',fields)).status,303);
+ assert.equal((await call('tools/list',{},agentKey,{Origin:'https://evil.example'})).status,403);
+ const init=await (await call('initialize',{protocolVersion:'2025-06-18'})).json();
+ assert.equal(init.result.protocolVersion,'2025-06-18');
+ const list=await (await call('tools/list')).json();
+ assert.deepEqual(list.result.tools.map(x=>x.name),['chamber_status']);
+ assert.equal((await (await call('tools/call',{name:'release_deploy',arguments:{}})).json()).error.code,-32602);
+ assert.equal((await post('/secrets/create',{name:'cloudflare-deploy-token',kind:'cloudflare-token',project:'Shared systems',value:CF_TOKEN,confirm:'yes'})).status,303);
+ const data=await (await call('tools/call',{name:'chamber_status',arguments:{}})).json();
+ const metadata=JSON.parse(data.result.content[0].text);
+ assert.equal(metadata.credentials[0].name,'cloudflare-deploy-token');
+ assert.deepEqual(Object.keys(metadata.credentials[0]).sort(),['kind','name','project','revision','status']);
+ assert.doesNotMatch(JSON.stringify(data),new RegExp(CF_TOKEN));
+ assert.equal(state.prepare("SELECT COUNT(*) n FROM vault_audit WHERE detail='MCP chamber_status'").get().n,1);
+ assert.equal((await (await call('tools/call',{name:'chamber_status',arguments:{name:'anything'}})).json()).error.code,-32602);
+ assert.equal((await post('/integrations/mcp',{id:'k1',confirm:'yes'})).status,303);
+ assert.equal((await call('tools/list')).status,403);
+ assert.equal((await post('/integrations/mcp',fields)).status,303);
+ tracker.prepare("UPDATE tracker_api_keys SET revoked_at='2026-11-28'").run();
+ assert.equal((await call('tools/list')).status,401);
+});
+
+test('MCP tracker routes are fixed, enforce scope and forward revision-gated updates',async()=>{
+ const {env,state,agentKey}=await setup();
+ state.prepare('INSERT INTO mcp_grants VALUES(?,?,?)').run('k1',JSON.stringify(['tracker.read']),'now');
+ const call=async(method,params={})=>(await dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{authorization:'Bearer '+agentKey,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{})).json();
+ const seen=[],real=globalThis.fetch;
+ globalThis.fetch=async(url,init)=>{seen.push([String(url),init]);return Response.json({tasks:[],revision:3})};
+ try{
+  assert.equal((await call('tools/list')).result.tools.length,6);
+  assert.equal((await call('resources/list')).result.resources.length,2);
+  assert.equal((await call('prompts/get',{name:'next_priority'})).result.messages.length,1);
+  await call('tools/call',{name:'list_tasks',arguments:{priority:'P0',limit:20}});
+  assert.match(seen[0][0],/^https:\/\/portfolio-tracker-api\.larki-brian\.workers\.dev\/v1\/tasks\?priority=P0&limit=20$/);
+  assert.equal(seen[0][1].redirect,'error');
+  assert.equal((await call('tools/call',{name:'get_task',arguments:{task_id:'../../secrets'}})).error.code,-32602);
+  assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:3,status:'Done'}})).error.code,-32602);
+  assert.equal(seen.length,1);
+  state.prepare('UPDATE mcp_grants SET scopes=?').run(JSON.stringify(['tracker.read','tracker.write']));
+  await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:3,status:'In progress'}});
+  assert.equal(seen[1][1].method,'PATCH');assert.deepEqual(JSON.parse(seen[1][1].body),{revision:3,status:'In progress'});
+  assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',status:'Done'}})).error.code,-32602);
+ }finally{globalThis.fetch=real}
+});
