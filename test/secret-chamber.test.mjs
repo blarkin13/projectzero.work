@@ -4,7 +4,6 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import account from '../workers/projectzero-commercial/worker.mjs';
-import trackerWorker from '../workers/portfolio-tracker-api/worker.mjs';
 import dash,{stripeRefresh} from '../workers/portfolio-owner/worker.mjs';
 const A='https://account.projectzero.work',D='https://dash.projectzero.work';
 const token=()=>Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
@@ -28,7 +27,6 @@ async function setup(){
  const agentKey='ptk_'+'a1'.repeat(32);tracker.prepare("INSERT INTO tracker_api_keys VALUES('k1','Claude',?,'2026-01-01',?,NULL)").run(sha(agentKey),new Date(Date.now()+86400000).toISOString());
  const env={ACCOUNT_AUTH_DB:authDb,OWNER_EMAIL:'owner@gmail.com',PORTFOLIO:d1(state),TRACKER:d1(tracker),VAULT_MASTER_KEY:Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64')};
  env.__cookie=cookie;
- env.TRACKER_API={fetch:request=>trackerWorker.fetch(request,{DB:env.TRACKER})};
  const get=async path=>{const r=await dash.fetch(new Request(D+path,{headers:{cookie,accept:'text/html'}}),env,{});return {status:r.status,text:await r.text()}};
  const post=(path,fields,origin=D)=>dash.fetch(new Request(D+path,{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(fields)}),env,{});
  const agent=(body,key=agentKey)=>dash.fetch(new Request(D+'/api/agent/deploy',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify(body)}),env,{});
@@ -222,27 +220,30 @@ test('MCP grants are owner-controlled, scoped, revocable and never reveal Chambe
  assert.equal((await call('tools/list')).status,401);
 });
 
-test('MCP tracker routes are fixed, enforce scope and forward revision-gated updates',async()=>{
- const {env,state,agentKey}=await setup();
+test('Embedded tracker handler exactly matches the standalone authenticated API',()=>{
+ const owner=readFileSync('workers/portfolio-owner/worker.mjs','utf8');
+ const api=readFileSync('workers/portfolio-tracker-api/worker.mjs','utf8').trim().replace('export default {async fetch','return {async fetch');
+ assert.ok(owner.includes('const mcpTrackerApi=(()=>{\n'+api+'\n})();'));
+});
+
+test('MCP tracker routes enforce scope, filter real data and perform revision-gated updates',async()=>{
+ const {env,state,tracker,agentKey}=await setup();
+ tracker.prepare("INSERT INTO tracker_tasks(project,task_id,priority,task,status,owner,due_date,source_updated,evidence,notes,repository) VALUES('Demo','PZ-01','P0','Test','Not started','Claude','','','','','')").run();
  state.prepare('INSERT INTO mcp_grants VALUES(?,?,?)').run('k1',JSON.stringify(['tracker.read']),'now');
  const call=async(method,params={})=>(await dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{authorization:'Bearer '+agentKey,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{})).json();
- const seen=[],real=env.TRACKER_API;
- env.TRACKER_API={fetch:async(req)=>{seen.push([req.url,{method:req.method,redirect:req.redirect,body:await req.text(),headers:req.headers}]);return Response.json({tasks:[],revision:3})}};
- try{
-  assert.equal((await call('tools/list')).result.tools.length,6);
-  assert.equal((await call('resources/list')).result.resources.length,2);
-  assert.equal((await call('prompts/get',{name:'next_priority'})).result.messages.length,1);
-  await call('tools/call',{name:'list_tasks',arguments:{priority:'P0',limit:20}});
-  assert.match(seen[0][0],/^https:\/\/portfolio-tracker-api\.larki-brian\.workers\.dev\/v1\/tasks\?priority=P0&limit=20$/);
-  assert.equal(seen[0][1].redirect,'error');
-  assert.equal((await call('tools/call',{name:'get_task',arguments:{task_id:'../../secrets'}})).error.code,-32602);
-  assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:3,status:'Done'}})).error.code,-32602);
-  assert.equal(seen.length,1);
-  state.prepare('UPDATE mcp_grants SET scopes=?').run(JSON.stringify(['tracker.read','tracker.write']));
-  await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:3,status:'In progress'}});
-  assert.equal(seen[1][1].method,'PATCH');assert.deepEqual(JSON.parse(seen[1][1].body),{revision:3,status:'In progress'});
-  assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',status:'Done'}})).error.code,-32602);
- }finally{env.TRACKER_API=real}
+ const result=rpc=>JSON.parse(rpc.result.content[0].text);
+ assert.equal((await call('tools/list')).result.tools.length,6);
+ assert.equal((await call('resources/list')).result.resources.length,2);
+ assert.equal((await call('prompts/get',{name:'next_priority'})).result.messages.length,1);
+ assert.equal(result(await call('tools/call',{name:'list_tasks',arguments:{priority:'P0',limit:20}})).tasks[0].task_id,'PZ-01');
+ assert.equal(result(await call('tools/call',{name:'list_tasks',arguments:{priority:'P1'}})).tasks.length,0);
+ assert.equal((await call('tools/call',{name:'get_task',arguments:{task_id:'../../secrets'}})).error.code,-32602);
+ assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:1,status:'Done'}})).error.code,-32602);
+ state.prepare('UPDATE mcp_grants SET scopes=?').run(JSON.stringify(['tracker.read','tracker.write']));
+ assert.equal(result(await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:1,status:'In progress'}})).task.revision,2);
+ assert.equal(result(await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:1,status:'Done',evidence:'test'}})).status,409);
+ assert.equal(tracker.prepare('SELECT status FROM tracker_tasks WHERE task_id=?').get('PZ-01').status,'In progress');
+ assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',status:'Done'}})).error.code,-32602);
 });
 
 test('MCP connection manager creates dedicated scoped tokens, tracks use and revokes without exposing backing keys',async()=>{
@@ -265,12 +266,9 @@ test('MCP connection manager creates dedicated scoped tokens, tracks use and rev
  const listed=await (await rpc('tools/list')).json();assert.equal(listed.result.tools.length,6);
  assert.ok(state.prepare('SELECT last_seen_at FROM mcp_connections').get().last_seen_at);
  assert.equal((await (await rpc('tools/call',{name:'release_deploy',arguments:{worker:'portfolio-owner',commit:'c'.repeat(40),confirm:'deploy'}})).json()).error.code,-32602);
- const real=env.TRACKER_API;let backing;
- env.TRACKER_API={fetch:async(req)=>{assert.equal(req.url,'https://portfolio-tracker-api.larki-brian.workers.dev/v1/projects');backing=req.headers.get('Authorization').slice(7);return real.fetch(req)}};
  tracker.prepare('INSERT INTO tracker_projects(project) VALUES(?)').run('Demo');
- try{assert.equal(JSON.parse((await (await rpc('tools/call',{name:'list_projects',arguments:{}})).json()).result.content[0].text).projects[0].project,'Demo')}finally{env.TRACKER_API=real}
- assert.match(backing,/^ptk_[0-9a-f]{64}$/);assert.notEqual(backing,key);
- assert.equal(tracker.prepare('SELECT token_hash FROM tracker_api_keys WHERE id=?').get(row.tracker_key_id).token_hash,sha(backing));
+ assert.equal(JSON.parse((await (await rpc('tools/call',{name:'list_projects',arguments:{}})).json()).result.content[0].text).projects[0].project,'Demo');
+ assert.ok(tracker.prepare('SELECT token_hash FROM tracker_api_keys WHERE id=?').get(row.tracker_key_id).token_hash);
  assert.equal((await post('/integrations/mcp',{action:'legacy',id:row.tracker_key_id,scope:'deploy.write',confirm:'yes'})).status,409);
  assert.equal((await post('/integrations/mcp',{action:'save',id:row.id,scope:'chamber.read',confirm:'yes'})).status,303);
  assert.deepEqual((await (await rpc('tools/list')).json()).result.tools.map(x=>x.name),['chamber_status']);
