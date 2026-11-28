@@ -10,20 +10,20 @@ implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and
 
 1. In ChatGPT, open Settings → Plugins → Add custom MCP server.
 2. Name it Project.Zero.Work, enter `https://dash.projectzero.work/mcp`, and choose **OAuth or no authentication** (mixed discovery mode). Do not choose No authentication alone. Anonymous discovery reveals only static tool descriptors.
-3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted.
+3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted and no connection needs to be created in the dashboard beforehand. Permissions are chosen once, during OAuth consent.
 4. Review or revoke the resulting connection in the [MCP manager](https://dash.projectzero.work/integrations/mcp). Actual tool availability also depends on the ChatGPT account/workspace and client.
 
-The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
+The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent with a single-use handle issued only after login, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
 
 ## Connect a custom-header client
 1. Sign in to the dashboard as the owner and open [MCP integration](https://dash.projectzero.work/integrations/mcp).
-2. Choose **Add connection**, enter a name and select the assistant and permissions. Read-only access is selected by default.
+2. Expand **Advanced · Manual tokens** and choose **Create a manual token**, enter a name and select the assistant and permissions. Read-only access is selected by default.
 3. Create the connection and save its MCP-only token (shown once). The token has no direct tracker API or agent deployment access. Its backing tracker key is encrypted internally and never displayed.
 4. Configure a Streamable HTTP MCP client with the server URL and
    `Authorization: Bearer <private-MCP-token>`. Store the token in the client's secret store, not its source, shared prompts or a public configuration.
 5. Use the connection manager to review last use, change permissions, disable all scopes, or revoke the connection. Revocation also revokes the backing tracker key. Tokens expire after 90 days.
 
-Legacy tracker keys can be managed in the collapsed Existing tracker keys section; those keys retain their original direct API privileges. Prefer dedicated MCP-only connections for new clients.
+Legacy tracker keys can be managed in the collapsed Legacy tracker keys section; those keys retain their original direct API privileges. Prefer dedicated MCP-only connections for new clients.
 
 For a client accepting a server URL and custom HTTP headers, use the URL and
 header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted Claude OAuth is not yet verified or enabled.
