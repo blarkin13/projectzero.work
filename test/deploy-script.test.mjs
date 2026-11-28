@@ -78,3 +78,8 @@ test('rollback restores a known version at 100%',async()=>{
  const {st,fetch}=world();const out=await release({...base(),mode:'rollback',versionId:'33333333-3333-4333-8333-333333333333'},{token:TOKEN,account:ACCOUNT,fetch});
  assert.equal(out.active_version,'33333333-3333-4333-8333-333333333333');assert.deepEqual(st.deployPosts[0].versions,[{percentage:100,version_id:'33333333-3333-4333-8333-333333333333'}]);
 });
+
+test('MCP OAuth migration conforms to the gated production release parser',()=>{
+ const m=parseMigration(readFileSync('schema/migrations/009-mcp-oauth.sql','utf8'));
+ assert.equal(m.worker,'portfolio-owner');assert.equal(m.binding,'PORTFOLIO');assert.equal(m.statements,4);
+});
