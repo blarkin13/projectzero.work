@@ -4,7 +4,7 @@ The owner Worker serves a private, stateless Streamable HTTP MCP endpoint at
 `https://dash.projectzero.work/mcp`. Supported handshake-era protocol revisions
 are 2025-11-25, 2025-06-18 and 2025-03-26. The endpoint supports initialize,
 notifications, ping, tools, resources and prompts over JSON-RPC. It does not
-implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and authorization-code + PKCE are provided for ChatGPT. Initialization and tool schemas are public discovery metadata only. All private data, resources and tool execution require an OAuth access token or a dedicated bearer token; browser cookies and query-string credentials are not accepted by the resource endpoint.
+implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and authorization-code + PKCE are provided for ChatGPT and Claude. Initialization and tool schemas are public discovery metadata only. All private data, resources and tool execution require an OAuth access token or a dedicated bearer token; browser cookies and query-string credentials are not accepted by the resource endpoint.
 
 ## Connect ChatGPT through OAuth
 
@@ -13,11 +13,21 @@ implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and
 3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted and no connection needs to be created in the dashboard beforehand. Permissions are chosen once, on a standalone consent page. A single Authorize connection click approves the selected permissions and returns to ChatGPT.
 4. Review or revoke the resulting connection in the [MCP manager](https://dash.projectzero.work/integrations/mcp). Actual tool availability also depends on the ChatGPT account/workspace and client.
 
-The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent with a single-use handle issued only after login, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
+The OAuth server uses registered ChatGPT and Claude HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent with a single-use handle issued only after login, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled. The owner-only setup does not authorize any third-party application automatically.
+
+## Connect Claude through OAuth
+
+1. Open Claude → Customize → Connectors → Add custom connector.
+2. Name it Project.Zero.Work and enter the same server URL, `https://dash.projectzero.work/mcp`.
+3. Choose **Sign in now** and **Register automatically** for OAuth client registration. No manual client ID, client secret or bearer token is needed.
+4. Sign in to Project Zero as the owner and authorize the requested permissions. The connection is labelled Claude in the dashboard and its tracker activity is attributed to Claude.
+5. Enable the connector in a conversation and test a read-only project list before granting write access.
+
+Only the exact published callback `https://claude.ai/api/mcp/auth_callback` is accepted. The callback and client identity are bound to the consent and token exchange; there are no wildcard redirect hosts. Claude's older clients may omit the resource parameter because this server has exactly one resource; a supplied resource must always match. The ChatGPT flow continues to require the exact resource parameter. The complete OAuth flow is covered by integration tests; a real Claude account must complete sign-in to verify the hosted client itself.
 
 ## Connect a custom-header client
 1. Sign in to the dashboard as the owner and open [MCP integration](https://dash.projectzero.work/integrations/mcp).
-2. Expand **Advanced · Manual tokens** and choose **Create a manual token**, enter a name and select the assistant and permissions. Read-only access is selected by default.
+2. Expand **Advanced · Manual tokens** and choose **Create a manual token**, enter a descriptive name and select the tracker audit identity and permissions. Read-only access is selected by default.
 3. Create the connection and save its MCP-only token (shown once). The token has no direct tracker API or agent deployment access. Its backing tracker key is encrypted internally and never displayed.
 4. Configure a Streamable HTTP MCP client with the server URL and
    `Authorization: Bearer <private-MCP-token>`. Store the token in the client's secret store, not its source, shared prompts or a public configuration.
@@ -26,7 +36,7 @@ The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time 
 Legacy tracker keys can be managed in the collapsed Legacy tracker keys section; those keys retain their original direct API privileges. Prefer dedicated MCP-only connections for new clients.
 
 For a client accepting a server URL and custom HTTP headers, use the URL and
-header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted Claude OAuth is not yet verified or enabled.
+header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted Claude uses the OAuth setup above. Cursor, GitHub Copilot / VS Code, Gemini CLI and other remote HTTP clients that support custom authorization headers can use dedicated manual tokens. These tokens are intentionally attributed to the selected existing ChatGPT or Claude tracker audit identity; the connection label identifies the actual client. OAuth redirects for these additional clients are not enabled.
 
 ## Capabilities
 
@@ -39,7 +49,7 @@ header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted
 | deploy.write | release_deploy, release_rollback |
 | stripe.refresh | refresh_stripe_reports (private aggregate snapshots, status only) |
 
-Dedicated MCP-only tokens are hashed, and their backing tracker tokens are encrypted with the Chamber master key. Tracker calls use the original authenticated tracker API inside the owner Worker using the same tracker database and authenticated handler (parity checked against the standalone tracker API), including revision
+Dedicated MCP-only tokens are hashed, and their backing tracker tokens are encrypted with the Chamber master key. Tracker calls use the original authenticated tracker API inside the owner Worker using the same tracker database and authenticated handler (parity checked against the standalone tracker API). The local invocation does not construct a cross-origin Fetch Request, including revision
 checks and audit trail. The underlying tracker key retains its existing direct
 API permissions; MCP grants govern the new endpoint only. Existing direct agent
 deployment permissions are unchanged. Deployment still checks merge ancestry,
