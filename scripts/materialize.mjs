@@ -26,6 +26,14 @@ for (const name of names) {
   const check = spawnSync(process.execPath,['--check',dir+'/worker.mjs'],{stdio:'inherit'});
   if(check.status !== 0 || check.error) throw Error('Syntax check failed: '+name);
   const metadata = {...entry.metadata, main_module:'worker.js'};
+  // This specific internal service is a code-owned dependency, not a secret.
+  // Pin it so stale private manifests cannot omit the MCP tracker bridge.
+  if (name==='portfolio-owner') {
+    const binding={name:'TRACKER_API',type:'service',service:'portfolio-tracker-api'};
+    const existing=(metadata.bindings||[]).find(b=>b.name===binding.name);
+    if(existing&&(existing.type!==binding.type||existing.service!==binding.service))throw Error('Unexpected TRACKER_API binding target');
+    metadata.bindings=[...(metadata.bindings||[]).filter(b=>b.name!==binding.name),binding];
+  }
   if (metadata.bindings?.some(x=>x.type==='secret_text')) throw Error('Secret values must not be embedded in build metadata');
   if (name==='projectzero-commercial' && metadata.bindings?.some(x=>x.name==='CUSTOMER_ACCESS' && x.text!=='disabled')) throw Error('Commercial customer access must remain disabled');
   writeFileSync(dir+'/metadata.json',JSON.stringify(metadata,null,2),{mode:0o600});

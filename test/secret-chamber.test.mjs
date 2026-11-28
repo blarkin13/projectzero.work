@@ -4,6 +4,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import account from '../workers/projectzero-commercial/worker.mjs';
+import trackerWorker from '../workers/portfolio-tracker-api/worker.mjs';
 import dash,{stripeRefresh} from '../workers/portfolio-owner/worker.mjs';
 const A='https://account.projectzero.work',D='https://dash.projectzero.work';
 const token=()=>Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
@@ -23,10 +24,11 @@ async function setup(){
  const bridge=await dash.fetch(new Request(D+'/auth/bridge',{method:'POST',headers:{origin:A,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({code})}),{ACCOUNT_AUTH_DB:authDb,OWNER_EMAIL:'owner@gmail.com'},{});
  const cookie=bridge.headers.getSetCookie()[0].split(';')[0];
  const state=new DatabaseSync(':memory:');state.exec(readFileSync('schema/owner-state.sql','utf8'));
- const tracker=new DatabaseSync(':memory:');tracker.exec("CREATE TABLE tracker_api_keys(id TEXT PRIMARY KEY, actor TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT)");
+ const tracker=new DatabaseSync(':memory:');tracker.exec(readFileSync('schema/tracker.sql','utf8'));
  const agentKey='ptk_'+'a1'.repeat(32);tracker.prepare("INSERT INTO tracker_api_keys VALUES('k1','Claude',?,'2026-01-01',?,NULL)").run(sha(agentKey),new Date(Date.now()+86400000).toISOString());
  const env={ACCOUNT_AUTH_DB:authDb,OWNER_EMAIL:'owner@gmail.com',PORTFOLIO:d1(state),TRACKER:d1(tracker),VAULT_MASTER_KEY:Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64')};
  env.__cookie=cookie;
+ env.TRACKER_API={fetch:request=>trackerWorker.fetch(request,{DB:env.TRACKER})};
  const get=async path=>{const r=await dash.fetch(new Request(D+path,{headers:{cookie,accept:'text/html'}}),env,{});return {status:r.status,text:await r.text()}};
  const post=(path,fields,origin=D)=>dash.fetch(new Request(D+path,{method:'POST',headers:{cookie,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(fields)}),env,{});
  const agent=(body,key=agentKey)=>dash.fetch(new Request(D+'/api/agent/deploy',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify(body)}),env,{});
@@ -224,8 +226,8 @@ test('MCP tracker routes are fixed, enforce scope and forward revision-gated upd
  const {env,state,agentKey}=await setup();
  state.prepare('INSERT INTO mcp_grants VALUES(?,?,?)').run('k1',JSON.stringify(['tracker.read']),'now');
  const call=async(method,params={})=>(await dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{authorization:'Bearer '+agentKey,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{})).json();
- const seen=[],real=globalThis.fetch;
- globalThis.fetch=async(url,init)=>{seen.push([String(url),init]);return Response.json({tasks:[],revision:3})};
+ const seen=[],real=env.TRACKER_API;
+ env.TRACKER_API={fetch:async(req)=>{seen.push([req.url,{method:req.method,redirect:req.redirect,body:await req.text(),headers:req.headers}]);return Response.json({tasks:[],revision:3})}};
  try{
   assert.equal((await call('tools/list')).result.tools.length,6);
   assert.equal((await call('resources/list')).result.resources.length,2);
@@ -240,7 +242,7 @@ test('MCP tracker routes are fixed, enforce scope and forward revision-gated upd
   await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',revision:3,status:'In progress'}});
   assert.equal(seen[1][1].method,'PATCH');assert.deepEqual(JSON.parse(seen[1][1].body),{revision:3,status:'In progress'});
   assert.equal((await call('tools/call',{name:'update_task',arguments:{task_id:'PZ-01',status:'Done'}})).error.code,-32602);
- }finally{globalThis.fetch=real}
+ }finally{env.TRACKER_API=real}
 });
 
 test('MCP connection manager creates dedicated scoped tokens, tracks use and revokes without exposing backing keys',async()=>{
@@ -263,9 +265,10 @@ test('MCP connection manager creates dedicated scoped tokens, tracks use and rev
  const listed=await (await rpc('tools/list')).json();assert.equal(listed.result.tools.length,6);
  assert.ok(state.prepare('SELECT last_seen_at FROM mcp_connections').get().last_seen_at);
  assert.equal((await (await rpc('tools/call',{name:'release_deploy',arguments:{worker:'portfolio-owner',commit:'c'.repeat(40),confirm:'deploy'}})).json()).error.code,-32602);
- const real=globalThis.fetch;let backing;
- globalThis.fetch=async(url,init)=>{assert.equal(String(url),'https://portfolio-tracker-api.larki-brian.workers.dev/v1/projects');backing=init.headers.Authorization.slice(7);return Response.json({projects:[]})};
- try{assert.deepEqual(JSON.parse((await (await rpc('tools/call',{name:'list_projects',arguments:{}})).json()).result.content[0].text),{projects:[]})}finally{globalThis.fetch=real}
+ const real=env.TRACKER_API;let backing;
+ env.TRACKER_API={fetch:async(req)=>{assert.equal(req.url,'https://portfolio-tracker-api.larki-brian.workers.dev/v1/projects');backing=req.headers.get('Authorization').slice(7);return real.fetch(req)}};
+ tracker.prepare('INSERT INTO tracker_projects(project) VALUES(?)').run('Demo');
+ try{assert.equal(JSON.parse((await (await rpc('tools/call',{name:'list_projects',arguments:{}})).json()).result.content[0].text).projects[0].project,'Demo')}finally{env.TRACKER_API=real}
  assert.match(backing,/^ptk_[0-9a-f]{64}$/);assert.notEqual(backing,key);
  assert.equal(tracker.prepare('SELECT token_hash FROM tracker_api_keys WHERE id=?').get(row.tracker_key_id).token_hash,sha(backing));
  assert.equal((await post('/integrations/mcp',{action:'legacy',id:row.tracker_key_id,scope:'deploy.write',confirm:'yes'})).status,409);
@@ -337,6 +340,9 @@ test('OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revoc
  const rpc=(key,method='tools/list',params={})=>request('/mcp',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
  const tools=(await (await rpc(access_token)).json()).result.tools.map(x=>x.name);assert.ok(tools.includes('chamber_status'));assert.ok(!tools.includes('release_deploy'));assert.ok(!tools.includes('update_task'));
  const chamber=(await (await rpc(access_token,'tools/call',{name:'chamber_status',arguments:{}})).json()).result;assert.ok(!chamber.isError);
+ tracker.prepare('INSERT INTO tracker_projects(project) VALUES(?)').run('Demo');
+ const projects=await (await rpc(access_token,'tools/call',{name:'list_projects',arguments:{}})).json();assert.equal(JSON.parse(projects.result.content[0].text).projects[0].project,'Demo');
+ assert.equal(tracker.prepare('SELECT SUM(n) AS n FROM tracker_api_rate').get().n,1);
  assert.equal((await request('/api/agent/deploy',{method:'POST',headers:{authorization:'Bearer '+access_token,'content-type':'application/json'},body:'{}'})).status,401);
  assert.equal((await rpc(refresh_token)).status,401);
  const ref={grant_type:'refresh_token',client_id,refresh_token,resource:endpoint};
