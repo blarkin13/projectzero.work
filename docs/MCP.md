@@ -10,7 +10,7 @@ implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and
 
 1. In ChatGPT, open Settings → Plugins → Add custom MCP server.
 2. Name it Project.Zero.Work, enter `https://dash.projectzero.work/mcp`, and choose **OAuth or no authentication** (mixed discovery mode). Do not choose No authentication alone. Anonymous discovery reveals only static tool descriptors.
-3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted and no connection needs to be created in the dashboard beforehand. Permissions are chosen once, during OAuth consent.
+3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve when prompted by your first tool call. No token needs to be pasted and no connection needs to be created in the dashboard beforehand. Permissions are chosen once, on a standalone consent page. A single Authorize connection click approves the selected permissions and returns to ChatGPT.
 4. Review or revoke the resulting connection in the [MCP manager](https://dash.projectzero.work/integrations/mcp). Actual tool availability also depends on the ChatGPT account/workspace and client.
 
 The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent with a single-use handle issued only after login, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
