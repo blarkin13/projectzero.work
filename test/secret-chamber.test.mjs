@@ -250,7 +250,7 @@ test('MCP connection manager creates dedicated scoped tokens, tracks use and rev
  const {env,state,tracker,get,post}=await setup();
  const initial=await get('/integrations/mcp');
  assert.equal(initial.status,200);assert.match(initial.text,/Connect ChatGPT/);assert.match(initial.text,/Advanced · Manual tokens/);assert.match(initial.text,/No manual connection or token is needed/);assert.match(initial.text,/width:16px!important/);
- assert.match(initial.text,/No ChatGPT OAuth connections yet/);
+ assert.match(initial.text,/No OAuth connections yet/);for(const name of ['Connect Claude','Cursor','GitHub Copilot','Gemini CLI'])assert.ok(initial.text.includes(name));assert.ok((initial.text.match(/class="mcp-avatar"/g)||[]).length>=5);
  const p={action:'create',actor:'Claude',label:'Development laptop',scope:'tracker.read',confirm:'yes'};
  assert.equal((await post('/integrations/mcp',p,'https://evil.example')).status,403);
  assert.equal((await post('/integrations/mcp',{...p,scope:'anything'})).status,400);
@@ -286,25 +286,29 @@ test('migration 008 is additive and idempotent',()=>{
  assert.equal(db.prepare('SELECT COUNT(*) n FROM mcp_connections').get().n,0);
 });
 
-test('OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revocation',async()=>{
+for(const [actor,redirect] of [['ChatGPT','https://chatgpt.com/connector_platform_oauth_redirect'],['Claude','https://claude.ai/api/mcp/auth_callback']]) test(actor+' OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revocation',async()=>{
  const {env,state,tracker,post,get}=await setup();
- const endpoint=D+'/mcp',redirect='https://chatgpt.com/connector_platform_oauth_redirect';
+ const endpoint=D+'/mcp';
  const request=(path,init={})=>dash.fetch(new Request(D+path,init),env,{});
  const discovery=await request('/.well-known/oauth-protected-resource/mcp');assert.equal(discovery.status,200);assert.equal((await discovery.json()).resource,endpoint);
  const metadata=await (await request('/.well-known/oauth-authorization-server')).json();assert.deepEqual(metadata.code_challenge_methods_supported,['S256']);
  const unauthorized=await request('/mcp',{method:'POST'});assert.equal(unauthorized.status,401);assert.match(unauthorized.headers.get('www-authenticate'),/resource_metadata=/);
  const register=uri=>request('/oauth/register',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({redirect_uris:[uri],token_endpoint_auth_method:'none'})});
  assert.equal((await register('https://chatgpt.com.evil.invalid/connector_platform_oauth_redirect')).status,400);
+ assert.equal((await register('https://claude.ai.evil.invalid/api/mcp/auth_callback')).status,400);
+ assert.equal((await register('https://claude.ai/api/mcp/other')).status,400);
  assert.equal((await register(redirect+'?next=https://evil.invalid')).status,400);
- const reg=await register(redirect);assert.equal(reg.status,201);const {client_id}=await reg.json();
+ const reg=await register(redirect);assert.equal(reg.status,201);const {client_id,client_name}=await reg.json();assert.equal(client_name,actor);
  const verifier=token(),challenge=createHash('sha256').update(verifier).digest('base64url');
  const query=new URLSearchParams({client_id,redirect_uri:redirect,response_type:'code',state:'opaque-client-state',code_challenge:challenge,code_challenge_method:'S256',resource:endpoint,scope:'projectzero offline_access'});
  assert.equal((await request('/oauth/authorize?'+new URLSearchParams({...Object.fromEntries(query),resource:D+'/other'}))).status,400);
+ const missingResource=new URLSearchParams(query);missingResource.delete('resource');
+ assert.equal((await request('/oauth/authorize?'+missingResource,{headers:{accept:'text/html'}})).status,actor==='Claude'?303:400);
  const pending=await request('/oauth/authorize?'+query,{headers:{accept:'text/html'}});
  assert.equal(pending.status,303);assert.equal(pending.headers.get('location'),A+'/auth/dashboard');
  const pendingCookie=pending.headers.getSetCookie()[0].split(';')[0];
- const resume=await request('/oauth/authorize/resume',{headers:{cookie:env.__cookie+'; '+pendingCookie}});assert.equal(resume.status,200);const consentHTML=await resume.text();assert.match(consentHTML,/Authorize ChatGPT/);assert.match(consentHTML,/Choose permissions for this connection once/);
- assert.match(resume.headers.get('content-security-policy'),/form-action 'self' https:\/\/chatgpt\.com$/);
+ const resume=await request('/oauth/authorize/resume',{headers:{cookie:env.__cookie+'; '+pendingCookie}});assert.equal(resume.status,200);const consentHTML=await resume.text();assert.ok(consentHTML.includes('Authorize '+actor));assert.match(consentHTML,/Choose permissions for this connection once/);
+ assert.ok(resume.headers.get('content-security-policy').endsWith("form-action 'self' "+new URL(redirect).origin));
  assert.match(resume.headers.get('content-security-policy'),/script-src 'nonce-[A-Za-z0-9_-]+'/);
  assert.equal(resume.headers.get('referrer-policy'),'same-origin');
  assert.doesNotMatch(consentHTML,/mobile-v16\.js|Confirm permission changes|name="confirm"[^>]*type="checkbox"|type="checkbox" name="confirm"/);
@@ -324,17 +328,17 @@ test('OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revoc
  assert.equal((await consent(D,env.__cookie,wrongFields)).status,400);
  assert.equal(state.prepare('SELECT COUNT(*) n FROM mcp_connections').get().n,0);
  const approved=await consent(D,env.__cookie);assert.equal(approved.status,303);
- const callback=new URL(approved.headers.get('location'));assert.equal(callback.origin,'https://chatgpt.com');assert.equal(callback.searchParams.get('state'),'opaque-client-state');assert.equal(callback.searchParams.get('iss'),D);
+ const callback=new URL(approved.headers.get('location'));assert.equal(callback.origin,new URL(redirect).origin);assert.equal(callback.searchParams.get('state'),'opaque-client-state');assert.equal(callback.searchParams.get('iss'),D);
  const code=callback.searchParams.get('code');assert.ok(code);assert.equal((await consent()).status,400);
  const exchange=(params)=>request('/oauth/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams(params)});
  const grant={grant_type:'authorization_code',client_id,code,redirect_uri:redirect,code_verifier:verifier,resource:endpoint};
  assert.equal((await exchange({...grant,code_verifier:token()})).status,400);
  assert.equal((await exchange({...grant,resource:D+'/other'})).status,400);
- const issued=await exchange(grant);assert.equal(issued.status,200);assert.match(issued.headers.get('cache-control'),/no-store/);
- const {access_token,refresh_token}=await issued.json();
+ const issued=await exchange(actor==='Claude'?Object.fromEntries(Object.entries(grant).filter(([k])=>k!=='resource')):grant);assert.equal(issued.status,200);assert.match(issued.headers.get('cache-control'),/no-store/);
+ const {access_token,refresh_token,resource}=await issued.json();assert.equal(resource,endpoint);
  assert.equal((await exchange(grant)).status,400);
  const session=state.prepare('SELECT * FROM mcp_oauth_sessions').get();assert.equal(session.access_hash,sha(access_token));assert.equal(session.refresh_hash,sha(refresh_token));
- const manager=await get('/integrations/mcp');assert.match(manager.text,/ChatGPT connections · 1 enabled/);assert.match(manager.text,/OAuth sign-in ·/);assert.match(manager.text,/>Connected</);assert.match(manager.text,/Advanced · Manual tokens \(0 enabled\)/);
+ const manager=await get('/integrations/mcp');assert.match(manager.text,/OAuth connections · 1 enabled/);assert.match(manager.text,/OAuth sign-in ·/);assert.match(manager.text,/>Connected</);assert.match(manager.text,/Advanced · Manual tokens \(0 enabled\)/);
  const rpc=(key,method='tools/list',params={})=>request('/mcp',{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})});
  const tools=(await (await rpc(access_token)).json()).result.tools.map(x=>x.name);assert.ok(tools.includes('chamber_status'));assert.ok(!tools.includes('release_deploy'));assert.ok(!tools.includes('update_task'));
  const chamber=(await (await rpc(access_token,'tools/call',{name:'chamber_status',arguments:{}})).json()).result;assert.ok(!chamber.isError);
@@ -346,7 +350,7 @@ test('OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revoc
  const ref={grant_type:'refresh_token',client_id,refresh_token,resource:endpoint};
  const rotation=await exchange(ref);assert.equal(rotation.status,200);const fresh=await rotation.json();assert.equal((await rpc(access_token)).status,401);
  assert.equal((await exchange(ref)).status,400);assert.equal((await rpc(fresh.access_token)).status,200);
- const connection=state.prepare('SELECT * FROM mcp_connections').get();assert.equal((await post('/integrations/mcp',{action:'revoke',id:connection.id,confirm:'yes'})).status,303);
+ const connection=state.prepare('SELECT * FROM mcp_connections').get();assert.equal(connection.actor,actor);assert.equal(connection.label,actor+' · OAuth');assert.equal((await post('/integrations/mcp',{action:'revoke',id:connection.id,confirm:'yes'})).status,303);
  assert.equal((await rpc(fresh.access_token)).status,401);
  assert.equal((await exchange({...ref,refresh_token:fresh.refresh_token})).status,400);
  assert.ok(tracker.prepare('SELECT revoked_at FROM tracker_api_keys WHERE id=?').get(connection.tracker_key_id).revoked_at);
