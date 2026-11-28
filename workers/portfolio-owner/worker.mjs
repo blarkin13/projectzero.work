@@ -1273,8 +1273,14 @@ async function mcpOAuthPage(req,env,ctx,row,id){
  // A rendered form then survives another tab overwriting the temporary login cookie.
  const consent=pzToken(),rotated=await env.PORTFOLIO.prepare('UPDATE mcp_oauth_requests SET id=? WHERE id=? AND expires_at>? AND used_at IS NULL AND code_hash IS NULL RETURNING id').bind(await vaultSha('consent:'+consent),row.id,mcpOAuthNow()).first();
  if(!rotated)return response('Connection request expired. Restart authorization in ChatGPT.',400);
- const r=mcpPage('<section class="mcp-box mcp-consent"><div class="mcp-card-top"><h2>Authorize ChatGPT</h2><span class="mcp-badge on">Owner verified</span></div><p>Choose permissions for this connection once. Manage them later under MCP integration. Chamber secret values are never shared.</p><form method="post" action="/oauth/authorize"><input type="hidden" name="request" value="'+esc(consent)+'">'+mcpScopeFields(['tracker.read'])+mcpConfirm('I authorize the selected permissions')+'<div class="mcp-actions"><button class="mcp-btn" type="submit" name="decision" value="allow">Authorize connection</button><button class="mcp-btn secondary" type="submit" name="decision" value="deny" formnovalidate>Cancel</button></div></form></section>');
- r.headers.set('Set-Cookie',mcpOAuthCookieHeader(consent,600));r.headers.set('Referrer-Policy','no-referrer');r.headers.set('X-Frame-Options','DENY');return r;
+ // Do not inherit the dashboard form-action policy: browsers can block the
+ // cross-origin OAuth callback after a form POST. Only ChatGPT is an allowed
+ // destination, and the stored redirect URI is independently validated.
+ const nonce=pzToken(),handle='<input type="hidden" name="request" value="'+esc(consent)+'">';
+ const body='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize ChatGPT | Project Zero</title><style>'+MCP_CSS+'body{font-family:system-ui,sans-serif;background:#f4f5f7;color:#191919;margin:0;padding:24px}main{max-width:620px;margin:5vh auto}.mcp-brand{font-weight:700;letter-spacing:.06em;color:#666;font-size:12px;margin:0 0 16px}.mcp-consent{margin:0;padding:24px;width:auto}.mcp-consent h1{font-size:24px;margin:0}.mcp-consent .mcp-scopes{margin:16px 0}.mcp-consent .mcp-actions{justify-content:flex-start;flex-wrap:wrap}.mcp-consent button:disabled{opacity:.55;cursor:wait}.mcp-submitting{min-height:20px;margin-top:10px}@media(max-width:700px){body{padding:12px}main{margin:2vh auto}.mcp-consent{padding:16px}}</style></head><body><main><div class="mcp-brand">PROJECT ZERO · SECURE CONNECTION</div><section class="mcp-shell mcp-box mcp-consent"><div class="mcp-card-top"><h1>Authorize ChatGPT</h1><span class="mcp-badge on">Owner verified</span></div><p>Choose permissions for this connection once. Manage them later under MCP integration. Chamber secret values are never shared.</p><form id="mcp-allow" method="post" action="/oauth/authorize">'+handle+'<input type="hidden" name="decision" value="allow"><input type="hidden" name="confirm" value="yes">'+mcpScopeFields(['tracker.read'])+'<p>By selecting Authorize connection, you approve only the selected permissions.</p><div class="mcp-actions"><button class="mcp-btn" type="submit">Authorize connection</button><button class="mcp-btn secondary" type="submit" form="mcp-deny">Cancel</button></div></form><form id="mcp-deny" method="post" action="/oauth/authorize">'+handle+'<input type="hidden" name="decision" value="deny"></form><p id="mcp-consent-status" class="mcp-submitting" role="status" aria-live="polite"></p></section></main><script nonce="'+nonce+'">document.addEventListener("submit",function(e){if(document.body.dataset.submitting){e.preventDefault();return}document.body.dataset.submitting="1";for(const b of document.querySelectorAll("button"))b.disabled=true;document.getElementById("mcp-consent-status").textContent="Returning to ChatGPT…"});window.addEventListener("pageshow",function(){delete document.body.dataset.submitting;for(const b of document.querySelectorAll("button"))b.disabled=false;document.getElementById("mcp-consent-status").textContent=""});</script></body></html>';
+ const r=response(body,200,'text/html;charset=utf-8');
+ r.headers.set('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-"+nonce+"'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https://chatgpt.com");
+ r.headers.set('Set-Cookie',mcpOAuthCookieHeader(consent,600));r.headers.set('Referrer-Policy','same-origin');return r;
 }
 async function mcpOAuthRoute(req,env,ctx){
  const u=new URL(req.url),path=u.pathname,db=env.PORTFOLIO,now=mcpOAuthNow();
@@ -1315,9 +1321,9 @@ async function mcpOAuthRoute(req,env,ctx){
    const authEnv={ACCESS_AUD:env.PROJECT_ZERO_AUD,ACCESS_ISSUER:env.ACCESS_ISSUER,OWNER_EMAIL:env.OWNER_EMAIL};
    if(!await pzGoogleSession(req,env)&&(!authEnv.ACCESS_AUD||!await authorized(req,authEnv,ctx)))return response('Owner sign-in required',403);
    const f=new URLSearchParams(await mcpBounded(req,4000)),id=f.get('request');
-   if(!pzTokenOk(id)||f.getAll('request').length!==1)return response('Invalid connection request. Restart authorization in ChatGPT.',400);
+   if(!pzTokenOk(id)||f.getAll('request').length!==1){console.warn('MCP OAuth: consent handle missing or invalid');return response('Connection request invalid or outdated. Start a fresh authorization from ChatGPT.',400)}
    const hash=await vaultSha('consent:'+id),row=await db.prepare('SELECT * FROM mcp_oauth_requests WHERE id=? AND expires_at>? AND used_at IS NULL AND code_hash IS NULL').bind(hash,now).first();
-   if(!row)return response('Connection request expired',400);
+   if(!row){console.warn('MCP OAuth: consent handle expired or used');return response('Connection request expired or already submitted. Start a fresh authorization from ChatGPT.',400)}
    if(f.get('decision')==='deny'){
     const denied=await db.prepare('UPDATE mcp_oauth_requests SET used_at=? WHERE id=? AND used_at IS NULL AND code_hash IS NULL RETURNING id').bind(now,hash).first();
     return denied?mcpOAuthCallback(row,{error:'access_denied'}):response('Connection already handled',409);
@@ -1325,9 +1331,10 @@ async function mcpOAuthRoute(req,env,ctx){
    const scopes=[...new Set(f.getAll('scope'))];
    if(f.get('decision')!=='allow'||f.get('confirm')!=='yes'||!scopes.length||scopes.some(s=>!Object.hasOwn(MCP_SCOPES,s)))return response('Select at least one permission and confirm.',400);
    const code=pzToken(),approved=await db.prepare('UPDATE mcp_oauth_requests SET code_hash=?,scopes=?,expires_at=? WHERE id=? AND expires_at>? AND code_hash IS NULL AND used_at IS NULL RETURNING id').bind(await vaultSha(code),JSON.stringify(scopes),now+120,hash,now).first();
-   return approved?mcpOAuthCallback(row,{code}):response('Connection already handled',409);
+   if(approved){console.info('MCP OAuth: consent approved; redirecting to ChatGPT');return mcpOAuthCallback(row,{code})}return response('Connection already handled',409);
   }
   if(path==='/oauth/token'&&req.method==='POST'){
+   console.info('MCP OAuth: token exchange received');
    if(!req.headers.get('Content-Type')?.startsWith('application/x-www-form-urlencoded')||req.headers.has('Authorization'))return mcpOAuthError('invalid_request');
    const f=new URLSearchParams(await mcpBounded(req,10000));
    if(!mcpOAuthClean(f)||!mcpOAuthResource(f)||f.has('client_secret')||!mcpOAuthScopes(f.get('scope')||''))return mcpOAuthError('invalid_request');
@@ -1348,7 +1355,7 @@ async function mcpOAuthRoute(req,env,ctx){
     const updated=await db.prepare("UPDATE mcp_oauth_sessions SET access_hash=?,refresh_hash=?,access_expires=? WHERE refresh_hash=? AND client_id=? AND EXISTS(SELECT 1 FROM mcp_connections c WHERE c.id=mcp_oauth_sessions.connection_id AND c.revoked_at IS NULL AND c.expires_at>? AND c.scopes!='[]') RETURNING connection_id").bind(accessHash,refreshHash,now+3600,await vaultSha(prev),client.client_id,new Date().toISOString()).first();
     if(!updated)return mcpOAuthError('invalid_grant');
    }else return mcpOAuthError('unsupported_grant_type');
-   return mcpOAuthJson({access_token:access,token_type:'Bearer',expires_in:3600,refresh_token:refresh,scope:'projectzero offline_access'});
+   console.info('MCP OAuth: tokens issued');return mcpOAuthJson({access_token:access,token_type:'Bearer',expires_in:3600,refresh_token:refresh,scope:'projectzero offline_access'});
   }
   return mcpOAuthError('invalid_request',405);
  }catch{return mcpOAuthError('temporarily_unavailable',503)}

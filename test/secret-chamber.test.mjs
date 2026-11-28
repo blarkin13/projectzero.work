@@ -303,6 +303,13 @@ test('OAuth discovery, owner consent, PKCE exchange, rotation and MCP-only revoc
  assert.equal(pending.status,303);assert.equal(pending.headers.get('location'),A+'/auth/dashboard');
  const pendingCookie=pending.headers.getSetCookie()[0].split(';')[0];
  const resume=await request('/oauth/authorize/resume',{headers:{cookie:env.__cookie+'; '+pendingCookie}});assert.equal(resume.status,200);const consentHTML=await resume.text();assert.match(consentHTML,/Authorize ChatGPT/);assert.match(consentHTML,/Choose permissions for this connection once/);
+ assert.match(resume.headers.get('content-security-policy'),/form-action 'self' https:\/\/chatgpt\.com$/);
+ assert.match(resume.headers.get('content-security-policy'),/script-src 'nonce-[A-Za-z0-9_-]+'/);
+ assert.equal(resume.headers.get('referrer-policy'),'same-origin');
+ assert.doesNotMatch(consentHTML,/mobile-v16\.js|Confirm permission changes|name="confirm"[^>]*type="checkbox"|type="checkbox" name="confirm"/);
+ assert.match(consentHTML,/<input type="hidden" name="confirm" value="yes">/);
+ assert.match(consentHTML,/dataset\.submitting/);
+ assert.match(consentHTML,/form="mcp-deny"/);
  const cookie=env.__cookie+'; '+pendingCookie,requestId=consentHTML.match(/name="request" value="([A-Za-z0-9_-]+)"/)[1];
  assert.notEqual(requestId,pendingCookie.split('=')[1]);
  assert.equal((consentHTML.match(/name="scope"[^>]* checked/g)||[]).length,1);
