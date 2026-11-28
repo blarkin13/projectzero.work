@@ -4,11 +4,18 @@ The owner Worker serves a private, stateless Streamable HTTP MCP endpoint at
 `https://dash.projectzero.work/mcp`. Supported handshake-era protocol revisions
 are 2025-11-25, 2025-06-18 and 2025-03-26. The endpoint supports initialize,
 notifications, ping, tools, resources and prompts over JSON-RPC. It does not
-implement the newer 2026-era protocol, legacy SSE transport or OAuth discovery.
-Clients must support a custom Authorization header. No browser cookies or
-query-string credentials are accepted.
+implement the newer 2026-era protocol, legacy SSE transport. OAuth discovery and authorization-code + PKCE are provided for ChatGPT. MCP requests require an OAuth access token or a dedicated bearer token; browser cookies and query-string credentials are not accepted by the resource endpoint.
 
-## Connect an assistant
+## Connect ChatGPT through OAuth
+
+1. In ChatGPT, open Settings → Plugins → Add custom MCP server.
+2. Name it Project.Zero.Work, enter `https://dash.projectzero.work/mcp`, and choose **OAuth**. Do not select no authentication.
+3. Sign in with your existing Project Zero owner Google account, review permissions (read-only by default) and approve. No token needs to be pasted.
+4. Review or revoke the resulting connection in the [MCP manager](https://dash.projectzero.work/integrations/mcp). Actual tool availability also depends on the ChatGPT account/workspace and client.
+
+The OAuth server uses registered ChatGPT HTTPS callbacks, S256 PKCE, a one-time authorization code, resource binding, owner-only consent, one-hour access tokens and rotating refresh tokens. Connection grants expire after 90 days and are revocable immediately. Other OAuth clients require reviewed callback support; no public/customer connection is enabled.
+
+## Connect a custom-header client
 1. Sign in to the dashboard as the owner and open [MCP integration](https://dash.projectzero.work/integrations/mcp).
 2. Choose **Add connection**, enter a name and select the assistant and permissions. Read-only access is selected by default.
 3. Create the connection and save its MCP-only token (shown once). The token has no direct tracker API or agent deployment access. Its backing tracker key is encrypted internally and never displayed.
@@ -19,9 +26,7 @@ query-string credentials are accepted.
 Legacy tracker keys can be managed in the collapsed Existing tracker keys section; those keys retain their original direct API privileges. Prefer dedicated MCP-only connections for new clients.
 
 For a client accepting a server URL and custom HTTP headers, use the URL and
-header above. OAuth-only clients (including hosted connector interfaces that
-do not accept custom headers) require a separate OAuth integration; this release
-does not claim compatibility with those interfaces.
+header above. Use the OAuth setup above for the hosted ChatGPT interface. Hosted Claude OAuth is not yet verified or enabled.
 
 ## Capabilities
 
@@ -57,7 +62,7 @@ and same-origin protections. Chamber access fails closed if audit storage fails.
 
 ## Release
 
-Apply additive migrations `schema/migrations/007-mcp-grants.sql` and `schema/migrations/008-mcp-connections.sql` to the
+Apply additive migrations `schema/migrations/007-mcp-grants.sql` and `schema/migrations/008-mcp-connections.sql` and `schema/migrations/009-mcp-oauth.sql` to the
 portfolio-owner PORTFOLIO binding, then release only the portfolio-owner Worker
 through the existing approved release procedure. Do not change other Workers,
 routes, bindings or schedules. Verify the UI, anonymous 401, scoped discovery,
