@@ -256,7 +256,7 @@ test('MCP connection manager creates dedicated scoped tokens, tracks use and rev
  assert.match(html,/Connection created/);assert.doesNotMatch(html,/ptk_[0-9a-f]{64}/);
  const row=state.prepare("SELECT * FROM mcp_connections").get();
  assert.equal(row.token_hash,sha(key));assert.notEqual(row.ciphertext,key);assert.deepEqual(JSON.parse(row.scopes),['tracker.read']);
- const subsequent=await get('/integrations/mcp');assert.match(subsequent.text,/Development laptop/);assert.doesNotMatch(subsequent.text,new RegExp(key));assert.doesNotMatch(subsequent.text,new RegExp(row.ciphertext));
+ const subsequent=await get('/integrations/mcp');assert.match(subsequent.text,/Development laptop/);assert.doesNotMatch(subsequent.text,new RegExp(key));assert.equal(subsequent.text.includes(row.ciphertext),false);
  const rpc=async(method,params={})=>dash.fetch(new Request(D+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params})}),env,{});
  const direct=await dash.fetch(new Request(D+'/api/agent/deploy',{method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:JSON.stringify({worker:'portfolio-owner',mode:'preflight',commit:'c'.repeat(40)})}),env,{});
  assert.equal(direct.status,401);
